@@ -1,0 +1,27 @@
+# Credenciales y secretos — NUNCA subir al repo
+.env
+*.env.local
+
+# Datos generados por el bot
+data/
+logs/
+models/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
