@@ -56,9 +56,15 @@ def display_dashboard(engine, learner, api_client=None, last_scan=None):
     print(color("  PORTFOLIO", "bold"))
     print(f"  Balance (Cash):     {color(format_currency(summary['balance']), 'cyan')}")
     print(f"  Portfolio Value:    {color(format_currency(summary['portfolio_value']), 'bold')}")
+    print(f"  Peak Value:         {format_currency(summary.get('peak_value', summary['portfolio_value']))}")
     print(f"  Initial Balance:    {format_currency(summary['initial_balance'])}")
     print(f"  Total Return:       {color(format_pct(total_return), return_color)}")
+    drawdown = summary.get("drawdown", 0)
+    dd_color = "red" if drawdown > 0.1 else "yellow" if drawdown > 0.05 else "green"
+    print(f"  Drawdown from Peak: {color(format_pct(-drawdown), dd_color)}")
     print(f"  Open Positions:     {summary['open_positions']}")
+    if summary.get("circuit_breaker_active"):
+        print(f"  {color('  !! CIRCUIT BREAKER ACTIVE - Trading paused !!', 'red')}")
     print()
 
     # Trading Stats
@@ -136,6 +142,14 @@ def display_startup_banner(config):
     print(f"    Min Confidence:     {config.min_confidence:.0%}")
     print(f"    Scan Interval:      {config.scan_interval_seconds}s")
     print(f"    Database:           {config.db_path}")
+    print()
+    print(color("  Risk Management:", "bold"))
+    cb_status = "ON" if config.circuit_breaker_enabled else "OFF"
+    print(f"    Circuit Breaker:    {cb_status} (triggers at {config.circuit_breaker_drawdown_pct:.0%} drawdown)")
+    print(f"    CB Cooldown:        {config.circuit_breaker_cooldown_seconds}s")
+    slip_status = "ON" if config.slippage_enabled else "OFF"
+    print(f"    Slippage Sim:       {slip_status} (max {config.max_slippage_bps:.0f}bps)")
+    print(f"    Warm-up Period:     {config.warmup_min_data_points} data points")
     print()
     print(color("  Strategies:", "bold"))
     for name, weight in config.strategy_weights.items():

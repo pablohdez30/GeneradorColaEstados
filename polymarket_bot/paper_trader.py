@@ -4,12 +4,14 @@ Tracks portfolio, positions, P&L, and risk management.
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
 from .config import BotConfig
 from .database import Database
+from .slippage import SlippageSimulator
 from .strategies.base import TradeSignal
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,10 @@ class PaperTradingEngine:
         self.total_trades = 0
         self.winning_trades = 0
         self.losing_trades = 0
+        self.peak_value = config.initial_balance
+        self.circuit_breaker_active = False
+        self.circuit_breaker_until = 0.0  # timestamp when cooldown ends
+        self.slippage_sim = SlippageSimulator()
         self._load_state()
 
     def _load_state(self):
@@ -95,6 +101,10 @@ class PaperTradingEngine:
 
     def can_trade(self, amount: float) -> bool:
         """Check if we can make a trade of the given amount."""
+        # Circuit breaker check
+        if self._is_circuit_breaker_active():
+            return False
+
         positions = self.get_open_positions()
 
         if len(positions) >= self.config.max_open_positions:
@@ -124,9 +134,45 @@ class PaperTradingEngine:
 
         return True
 
-    def execute_buy(self, signal: TradeSignal, market) -> Optional[int]:
+    def _is_circuit_breaker_active(self) -> bool:
+        """Check if the circuit breaker is preventing trades."""
+        if not self.config.circuit_breaker_enabled:
+            return False
+
+        # Check cooldown
+        if self.circuit_breaker_active:
+            if time.time() < self.circuit_breaker_until:
+                remaining = int(self.circuit_breaker_until - time.time())
+                logger.debug(f"Circuit breaker active, {remaining}s remaining")
+                return True
+            else:
+                logger.info("Circuit breaker cooldown ended, resuming trading")
+                self.circuit_breaker_active = False
+                return False
+
+        # Check drawdown from peak
+        current_value = self.portfolio_value
+        if current_value > self.peak_value:
+            self.peak_value = current_value
+
+        if self.peak_value > 0:
+            drawdown = (self.peak_value - current_value) / self.peak_value
+            if drawdown >= self.config.circuit_breaker_drawdown_pct:
+                self.circuit_breaker_active = True
+                self.circuit_breaker_until = (
+                    time.time() + self.config.circuit_breaker_cooldown_seconds)
+                logger.warning(
+                    f"CIRCUIT BREAKER TRIGGERED: drawdown {drawdown:.1%} "
+                    f"(peak=${self.peak_value:.2f}, current=${current_value:.2f}). "
+                    f"Trading paused for {self.config.circuit_breaker_cooldown_seconds}s")
+                return True
+
+        return False
+
+    def execute_buy(self, signal: TradeSignal, market,
+                    order_book: Optional[dict] = None) -> Optional[int]:
         """
-        Execute a paper buy order.
+        Execute a paper buy order with realistic slippage simulation.
         Returns position ID if successful, None otherwise.
         """
         # Calculate position size
@@ -147,25 +193,47 @@ class PaperTradingEngine:
             logger.debug(f"Already have position in {market.condition_id}/{signal.target_outcome}")
             return None
 
-        # Determine entry price
+        # Determine midpoint price
         if signal.target_outcome == "yes":
-            price = market.outcome_yes_price
+            midpoint = market.outcome_yes_price
         else:
-            price = market.outcome_no_price
+            midpoint = market.outcome_no_price
 
-        if price <= 0 or price >= 1:
-            logger.debug(f"Invalid price: {price}")
+        if midpoint <= 0 or midpoint >= 1:
+            logger.debug(f"Invalid price: {midpoint}")
             return None
 
-        # Calculate shares (in prediction markets, shares = amount / price)
-        shares = amount / price
+        # Simulate slippage against real order book
+        if self.config.slippage_enabled and order_book:
+            fill = self.slippage_sim.simulate_buy(order_book, amount, midpoint)
+
+            if not fill.fully_filled:
+                logger.debug(f"Order book too thin for ${amount:.2f}")
+                return None
+
+            if fill.slippage_bps > self.config.max_slippage_bps:
+                logger.info(
+                    f"Rejected: slippage {fill.slippage_bps:.0f}bps > "
+                    f"max {self.config.max_slippage_bps:.0f}bps")
+                return None
+
+            price = fill.avg_fill_price
+            shares = fill.total_filled
+            actual_cost = fill.total_cost
+            slippage_info = f" | Slippage: {fill.slippage_bps:.0f}bps"
+        else:
+            # No order book — use midpoint (legacy behavior)
+            price = midpoint
+            shares = amount / price
+            actual_cost = amount
+            slippage_info = ""
 
         # Calculate stop loss and take profit prices
         stop_loss = price * (1 - self.config.stop_loss_pct)
         take_profit = price * (1 + self.config.take_profit_pct)
 
         # Deduct from balance
-        self.balance -= amount
+        self.balance -= actual_cost
 
         # Record in database
         trade_id = self.db.record_trade(
@@ -174,7 +242,7 @@ class PaperTradingEngine:
             outcome=signal.target_outcome,
             side="buy",
             price=price,
-            amount=amount,
+            amount=actual_cost,
             shares=shares,
             strategy=signal.strategy_name,
             confidence=signal.confidence,
@@ -187,7 +255,7 @@ class PaperTradingEngine:
             outcome=signal.target_outcome,
             entry_price=price,
             shares=shares,
-            amount=amount,
+            amount=actual_cost,
             strategy=signal.strategy_name,
             stop_loss=stop_loss,
             take_profit=take_profit,
@@ -197,18 +265,25 @@ class PaperTradingEngine:
 
         logger.info(
             f"BUY {signal.target_outcome.upper()} | {market.question[:60]} | "
-            f"Price: {price:.3f} | Amount: ${amount:.2f} | "
+            f"Price: {price:.3f} | Amount: ${actual_cost:.2f} | "
             f"Shares: {shares:.2f} | Strategy: {signal.strategy_name} | "
-            f"Confidence: {signal.confidence:.1%}"
+            f"Confidence: {signal.confidence:.1%}{slippage_info}"
         )
 
         self._save_snapshot()
         return position_id
 
-    def check_positions(self, get_current_price) -> list[dict]:
+    def check_positions(self, get_current_price,
+                        get_market_active=None) -> list[dict]:
         """
-        Check all open positions for stop loss / take profit.
-        get_current_price: callable(market_id, outcome) -> float
+        Check all open positions for stop loss / take profit / market resolution.
+
+        Args:
+            get_current_price: callable(market_id, outcome) -> float
+            get_market_active: callable(market_id) -> bool or None
+                               Returns whether a market is still active.
+                               If it returns False, the market has resolved.
+
         Returns list of closed position results.
         """
         closed = []
@@ -225,21 +300,58 @@ class PaperTradingEngine:
             should_close = False
             reason = ""
 
-            if pnl_pct <= -self.config.stop_loss_pct:
+            # Check 1: Market resolution detection
+            if get_market_active is not None:
+                is_active = get_market_active(pos.market_id)
+                if is_active is False:
+                    should_close = True
+                    # Determine resolution: price near 1.0 means our outcome won
+                    if current_price >= 0.95:
+                        close_price = 1.0  # Full payout
+                        reason = "Market resolved: outcome WON"
+                    elif current_price <= 0.05:
+                        close_price = 0.0  # Total loss
+                        reason = "Market resolved: outcome LOST"
+                    else:
+                        close_price = current_price
+                        reason = f"Market resolved (price={current_price:.3f})"
+
+                    result = self._close_position(pos, close_price, reason)
+                    closed.append(result)
+                    continue
+
+            # Check 2: Price snapped to extreme (likely resolved even if API says active)
+            if current_price >= 0.99 or current_price <= 0.01:
                 should_close = True
+                close_price = 1.0 if current_price >= 0.99 else 0.0
+                reason = f"Market resolved (price snapped to {current_price:.3f})"
+
+            # Check 3: Stop loss
+            elif pnl_pct <= -self.config.stop_loss_pct:
+                should_close = True
+                close_price = current_price
                 reason = f"Stop loss triggered ({pnl_pct:.1%})"
 
+            # Check 4: Take profit
             elif pnl_pct >= self.config.take_profit_pct:
                 should_close = True
+                close_price = current_price
                 reason = f"Take profit triggered ({pnl_pct:.1%})"
 
+            # Check 5: Near resolution (high probability of resolution)
             elif current_price >= 0.95 or current_price <= 0.05:
                 should_close = True
+                close_price = current_price
                 reason = f"Market near resolution (price={current_price:.3f})"
 
             if should_close:
-                result = self._close_position(pos, current_price, reason)
+                result = self._close_position(pos, close_price, reason)
                 closed.append(result)
+
+        # Update peak value for circuit breaker
+        current_value = self.portfolio_value
+        if current_value > self.peak_value:
+            self.peak_value = current_value
 
         return closed
 
@@ -332,15 +444,21 @@ class PaperTradingEngine:
     def get_summary(self) -> dict:
         """Get portfolio summary."""
         positions = self.get_open_positions()
+        current_value = self.portfolio_value
+        drawdown = ((self.peak_value - current_value) / self.peak_value
+                     if self.peak_value > 0 else 0)
         return {
             "balance": self.balance,
-            "portfolio_value": self.portfolio_value,
+            "portfolio_value": current_value,
             "open_positions": len(positions),
             "total_trades": self.total_trades,
             "winning_trades": self.winning_trades,
             "losing_trades": self.losing_trades,
             "win_rate": self.win_rate,
             "initial_balance": self.config.initial_balance,
-            "total_return": (self.portfolio_value - self.config.initial_balance)
+            "total_return": (current_value - self.config.initial_balance)
                             / self.config.initial_balance if self.config.initial_balance > 0 else 0,
+            "peak_value": self.peak_value,
+            "drawdown": drawdown,
+            "circuit_breaker_active": self.circuit_breaker_active,
         }

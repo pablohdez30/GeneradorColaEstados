@@ -25,6 +25,15 @@ class BotConfig:
     take_profit_pct: float = 0.50      # Close position if up 50%
     max_portfolio_risk: float = 0.30   # Max 30% of balance at risk
 
+    # Circuit breaker: pause trading if drawdown exceeds threshold
+    circuit_breaker_enabled: bool = True
+    circuit_breaker_drawdown_pct: float = 0.20   # Pause if down 20% from peak
+    circuit_breaker_cooldown_seconds: int = 3600  # Wait 1 hour before resuming
+
+    # Slippage simulation
+    slippage_enabled: bool = True           # Use realistic order book fills
+    max_slippage_bps: float = 100.0         # Reject trades with >1% slippage
+
     # Strategy weights (used by the learning system)
     strategy_weights: dict = field(default_factory=lambda: {
         "momentum": 0.33,
@@ -37,6 +46,9 @@ class BotConfig:
     min_confidence: float = 0.6        # Minimum confidence to trade (0-1)
     min_liquidity: float = 1000.0      # Minimum market liquidity in USDC
     min_volume: float = 500.0          # Minimum 24h volume
+
+    # Warm-up: strategies need this many price history points before trading
+    warmup_min_data_points: int = 15   # Skip analysis if fewer data points
 
     # Learning system
     learning_rate: float = 0.05        # How fast strategy weights adapt

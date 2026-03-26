@@ -48,8 +48,10 @@ class PolymarketBot:
 
         # Market price cache (for position checking)
         self._price_cache: dict[str, dict[str, float]] = {}
+        self._market_active_cache: dict[str, bool] = {}
         self._last_scan: Optional[str] = None
         self._scan_count = 0
+        self._warmup_data: dict[str, int] = {}  # market_id -> data points seen
 
     def _setup_logging(self):
         """Configure logging."""
@@ -122,9 +124,11 @@ class PolymarketBot:
 
         logger.info(f"Found {len(tradeable)} tradeable markets out of {len(markets)}")
 
-        # Step 2: Check existing positions
+        # Step 2: Check existing positions (with resolution detection)
         self._update_price_cache(markets)
-        closed = self.engine.check_positions(self._get_cached_price)
+        self._update_active_cache(markets)
+        closed = self.engine.check_positions(
+            self._get_cached_price, self._get_market_active)
 
         if closed:
             logger.info(f"Closed {len(closed)} positions")
@@ -170,6 +174,15 @@ class PolymarketBot:
             price_history = self.api.get_price_history(token_id, interval="1w")
             order_book = self.api.get_order_book(token_id)
 
+        # Warm-up check: skip markets without enough historical data
+        data_points = len(price_history)
+        self._warmup_data[market.condition_id] = data_points
+        if data_points < self.config.warmup_min_data_points:
+            logger.debug(
+                f"Warm-up: {market.condition_id} has {data_points} points "
+                f"(need {self.config.warmup_min_data_points}), skipping")
+            return
+
         # Get signals from all strategies
         signals = []
         for strategy in self.strategies:
@@ -194,9 +207,9 @@ class PolymarketBot:
             f"on '{market.question[:50]}' "
             f"(confidence={combined.confidence:.1%})")
 
-        # Execute trade
+        # Execute trade with order book for slippage simulation
         if combined.is_buy:
-            self.engine.execute_buy(combined, market)
+            self.engine.execute_buy(combined, market, order_book=order_book)
 
     def _update_price_cache(self, markets: list[Market]):
         """Update the price cache with current market data."""
@@ -205,6 +218,33 @@ class PolymarketBot:
                 "yes": market.outcome_yes_price,
                 "no": market.outcome_no_price,
             }
+
+    def _update_active_cache(self, markets: list[Market]):
+        """Update market active status cache for resolution detection."""
+        fetched_ids = set()
+        for market in markets:
+            self._market_active_cache[market.condition_id] = market.active
+            fetched_ids.add(market.condition_id)
+
+        # Markets we have positions in but weren't in the active fetch
+        # are likely resolved/closed — mark them for re-check
+        for pos in self.engine.get_open_positions():
+            if pos.market_id not in fetched_ids:
+                # Fetch individually to check if resolved
+                fresh = self.api.get_market_by_id(pos.market_id)
+                if fresh:
+                    self._market_active_cache[pos.market_id] = fresh.active
+                    self._price_cache[pos.market_id] = {
+                        "yes": fresh.outcome_yes_price,
+                        "no": fresh.outcome_no_price,
+                    }
+                else:
+                    # Can't fetch — assume resolved
+                    self._market_active_cache[pos.market_id] = False
+
+    def _get_market_active(self, market_id: str) -> Optional[bool]:
+        """Check if a market is still active (not resolved)."""
+        return self._market_active_cache.get(market_id)
 
     def _get_cached_price(self, market_id: str, outcome: str) -> Optional[float]:
         """Get a cached price for position checking."""
