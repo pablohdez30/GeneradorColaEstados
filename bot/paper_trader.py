@@ -93,8 +93,8 @@ class PaperTrader:
         stop_loss = engine.compute_dynamic_stop_loss(entry_price, direction, atr, regime)
         take_profit = engine.compute_take_profit(entry_price, direction, atr)
 
-        # Calcular cantidad con leverage dinámico
-        quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss, dynamic_leverage)
+        # Calcular cantidad con leverage dinámico y riesgo dinámico
+        quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss, dynamic_leverage, confidence)
         if quantity == 0:
             logger.info("Position size = 0, trade cancelado")
             return None
@@ -110,9 +110,10 @@ class PaperTrader:
 
         # Justificación para el log
         dir_label = "LONG" if direction == "BUY" else "SHORT"
+        risk_pct = self.risk_manager.get_dynamic_risk(confidence)
         reasons_text = " | ".join(signal.get("reasons", []))
         justification = (
-            f"Señal {dir_label} x{dynamic_leverage} con {confidence:.0%} confluencia. "
+            f"Señal {dir_label} x{dynamic_leverage} riesgo={risk_pct:.1%} con {confidence:.0%} confluencia. "
             f"Razones: {reasons_text}"
         )
 
@@ -143,7 +144,7 @@ class PaperTrader:
 
         dir_log = "LONG" if direction == "BUY" else "SHORT"
         logger.info(
-            f"OPEN #{trade_id} | {dir_log} x{dynamic_leverage} @ {entry_price:.2f} | "
+            f"OPEN #{trade_id} | {dir_log} x{dynamic_leverage} risk={risk_pct:.1%} @ {entry_price:.2f} | "
             f"qty={quantity:.6f} | margin={margin_required:.2f} | "
             f"SL={stop_loss:.2f} | TP={take_profit:.2f} | fee={fee:.4f}"
         )

@@ -27,7 +27,11 @@ PAPER_MODE = True  # NUNCA operar en real sin cambio manual explícito
 FEE_RATE = 0.0004  # 0.04% comisión futuros Binance (taker)
 
 # ─── Gestión de Riesgo ──────────────────────────────────────────
-MAX_RISK_PER_TRADE = 0.007  # 0.7% del capital por operación (compensar múltiples posiciones)
+# Riesgo dinámico según confianza (confidence-based sizing)
+RISK_LOW = 0.005       # Confianza 25-40% → 0.5% del capital
+RISK_MID = 0.007       # Confianza 40-60% → 0.7% del capital
+RISK_HIGH = 0.010      # Confianza >60%   → 1.0% del capital
+MAX_RISK_PER_TRADE = 0.007  # Fallback por defecto
 MAX_OPEN_POSITIONS = 3  # Posiciones normales simultáneas
 MAX_OPEN_POSITIONS_EXTRA = 4  # Máximo absoluto (incluye slot extra para señales >60%)
 HIGH_CONFIDENCE_THRESHOLD = 0.60  # Señales con >60% confianza usan el slot extra

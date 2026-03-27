@@ -28,6 +28,7 @@ from config import (
     TAKE_PROFIT_LEVELS, FEE_RATE,
     LEVERAGE, LEVERAGE_LOW, LEVERAGE_MID, LEVERAGE_HIGH,
     COOLDOWN_AFTER_LOSS_SECONDS,
+    RISK_LOW, RISK_MID, RISK_HIGH,
 )
 from bot.logger import setup_logger
 
@@ -105,19 +106,35 @@ class RiskManager:
         else:
             return LEVERAGE_LOW   # x2
 
+    # ── Riesgo Dinámico ─────────────────────────────────────────
+
+    @staticmethod
+    def get_dynamic_risk(confidence: float) -> float:
+        """
+        Riesgo por trade según confianza de la señal.
+        Más confianza → arriesga más capital → posición más grande.
+        """
+        if confidence >= HIGH_CONFIDENCE_THRESHOLD:
+            return RISK_HIGH   # 1.0%
+        elif confidence >= 0.40:
+            return RISK_MID    # 0.7%
+        else:
+            return RISK_LOW    # 0.5%
+
     # ── Cálculo de Tamaño de Posición ──────────────────────────
 
     def calculate_position_size(self, entry_price: float, stop_loss: float,
-                                leverage: int = None) -> float:
+                                leverage: int = None, confidence: float = 0.0) -> float:
         """
-        Position sizing basado en riesgo fijo del capital.
+        Position sizing basado en riesgo dinámico del capital.
 
-        El leverage se recibe dinámicamente según la confianza de la señal.
+        Combina riesgo dinámico (según confianza) con leverage dinámico.
         """
         if leverage is None:
             leverage = LEVERAGE
 
-        risk_amount = self.current_balance * MAX_RISK_PER_TRADE
+        risk_pct = self.get_dynamic_risk(confidence)
+        risk_amount = self.current_balance * risk_pct
         price_risk = abs(entry_price - stop_loss)
 
         if price_risk == 0:
@@ -136,7 +153,7 @@ class RiskManager:
 
         margin_used = (quantity * entry_price) / leverage
         logger.debug(
-            f"Position size: qty={quantity:.6f} | risk={risk_amount:.2f} USDT | "
+            f"Position size: qty={quantity:.6f} | risk={risk_pct:.1%}={risk_amount:.2f} USDT | "
             f"price_risk={price_risk:.2f} | leverage={leverage}x | margin={margin_used:.2f}"
         )
         return quantity
