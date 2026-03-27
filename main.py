@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (
     SYMBOL, TIMEFRAME, PAPER_MODE, INITIAL_BALANCE,
     ENABLE_SENTIMENT, ML_MIN_TRADES_FOR_TRAINING,
+    LEVERAGE, MARKET_TYPE,
 )
 from bot.data_feed import DataFeed
 from bot.strategy_engine import StrategyEngine
@@ -52,23 +53,25 @@ sig.signal(sig.SIGTERM, shutdown_handler)
 
 
 def print_banner():
-    banner = """
+    mode_str = f"FUTUROS x{LEVERAGE}" if MARKET_TYPE == "futures" else "SPOT"
+    banner = f"""
     ╔══════════════════════════════════════════════════════════════╗
-    ║          🤖 BTC/USDT SCALPING BOT - PAPER TRADING 🤖       ║
+    ║       BTC/USDT SCALPING BOT - PAPER TRADING                ║
     ╠══════════════════════════════════════════════════════════════╣
-    ║  Par:          BTC/USDT                                     ║
+    ║  Par:          BTC/USDT Perpetual                           ║
+    ║  Mercado:      {mode_str:<45}║
     ║  Timeframe:    1m (scalping)                                ║
-    ║  Modo:         PAPER TRADING (simulación)                   ║
-    ║  Balance:      {:>10,.2f} USDT (ficticio)                  ║
-    ║  Riesgo/trade: 2% máximo                                    ║
+    ║  Modo:         PAPER TRADING (simulacion)                   ║
+    ║  Balance:      {INITIAL_BALANCE:>10,.2f} USDT (ficticio)                  ║
+    ║  Riesgo/trade: 1% maximo                                    ║
     ║  Max Drawdown: 15%                                          ║
     ╠══════════════════════════════════════════════════════════════╣
-    ║  Estrategia: Multi-Indicator Confluence                     ║
-    ║  Indicadores: RSI + MACD + BB + EMA + Volume + OrderBook    ║
-    ║  ML: Q-Learning adaptativo                                  ║
-    ║  Dashboard: streamlit run bot/dashboard.py                  ║
+    ║  Direccion:    LONG + SHORT (ambas direcciones)             ║
+    ║  Indicadores:  RSI + MACD + BB + EMA + Volume + OrderBook   ║
+    ║  ML:           Q-Learning adaptativo                        ║
+    ║  Dashboard:    streamlit run bot/dashboard.py               ║
     ╚══════════════════════════════════════════════════════════════╝
-    """.format(INITIAL_BALANCE)
+    """
     print(banner)
 
 

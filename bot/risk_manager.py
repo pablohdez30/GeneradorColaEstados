@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import (
     MAX_RISK_PER_TRADE, MAX_OPEN_POSITIONS, MAX_DRAWDOWN,
     TRAILING_STOP_PCT, MAX_TRADE_DURATION_MINUTES,
-    TAKE_PROFIT_LEVELS, FEE_RATE,
+    TAKE_PROFIT_LEVELS, FEE_RATE, LEVERAGE,
 )
 from bot.logger import setup_logger
 
@@ -90,12 +90,15 @@ class RiskManager:
 
     def calculate_position_size(self, entry_price: float, stop_loss: float) -> float:
         """
-        Position sizing basado en riesgo fijo (2% del capital).
+        Position sizing basado en riesgo fijo del capital.
+
+        Con apalancamiento x3:
+        - El margen requerido es entry_price * quantity / LEVERAGE
+        - El riesgo sigue siendo el mismo % del capital
+        - Pero la posición es LEVERAGE veces más grande
 
         Fórmula: quantity = (capital * max_risk) / |entry - stop_loss|
-
-        Esto asegura que si el stop se activa, la pérdida máxima
-        es exactamente el 2% del capital actual.
+        Límite: margen máximo = 95% del balance / LEVERAGE
         """
         risk_amount = self.current_balance * MAX_RISK_PER_TRADE
         price_risk = abs(entry_price - stop_loss)
@@ -106,17 +109,19 @@ class RiskManager:
 
         quantity = risk_amount / price_risk
 
-        # Validar que no exceda el balance disponible
-        max_quantity = (self.current_balance * 0.95) / entry_price  # 95% max
+        # Con apalancamiento, el límite de posición se multiplica por LEVERAGE
+        # pero el margen requerido sigue siendo balance / LEVERAGE
+        max_quantity = (self.current_balance * 0.95 * LEVERAGE) / entry_price
         quantity = min(quantity, max_quantity)
 
         # Mínimo viable
         if quantity * entry_price < 10:  # Menos de 10 USDT no vale la pena
             return 0.0
 
+        margin_used = (quantity * entry_price) / LEVERAGE
         logger.debug(
             f"Position size: qty={quantity:.6f} | risk={risk_amount:.2f} USDT | "
-            f"price_risk={price_risk:.2f}"
+            f"price_risk={price_risk:.2f} | leverage={LEVERAGE}x | margin={margin_used:.2f}"
         )
         return quantity
 

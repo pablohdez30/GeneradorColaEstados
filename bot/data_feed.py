@@ -21,7 +21,7 @@ import ccxt
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import EXCHANGE_ID, SYMBOL, TIMEFRAME, VOLUME_MA_PERIOD
+from config import EXCHANGE_ID, SYMBOL, TIMEFRAME, VOLUME_MA_PERIOD, MARKET_TYPE
 from bot.logger import setup_logger
 
 logger = setup_logger("data_feed")
@@ -29,7 +29,7 @@ logger = setup_logger("data_feed")
 
 class DataFeed:
     """
-    Proveedor de datos de mercado.
+    Proveedor de datos de mercado (spot o futuros perpetuos).
 
     Métodos principales:
     - fetch_ohlcv(): obtiene velas históricas
@@ -41,15 +41,17 @@ class DataFeed:
     def __init__(self):
         # Inicializar exchange sin credenciales (solo datos públicos para paper trading)
         exchange_class = getattr(ccxt, EXCHANGE_ID)
+        # Seleccionar tipo de mercado: spot o futuros perpetuos
+        market_type = "swap" if MARKET_TYPE == "futures" else "spot"
         self.exchange = exchange_class({
             "enableRateLimit": True,
-            "options": {"defaultType": "spot"},
+            "options": {"defaultType": market_type},
         })
         self.symbol = SYMBOL
         self.timeframe = TIMEFRAME
         self._candle_buffer = pd.DataFrame()
         self._buffer_size = 500  # Últimas 500 velas en memoria
-        logger.info(f"DataFeed inicializado: {EXCHANGE_ID} | {SYMBOL} | {TIMEFRAME}")
+        logger.info(f"DataFeed inicializado: {EXCHANGE_ID} | {SYMBOL} | {TIMEFRAME} | {MARKET_TYPE}")
 
     def fetch_ohlcv(self, limit: int = 500) -> pd.DataFrame:
         """

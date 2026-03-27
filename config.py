@@ -9,11 +9,15 @@ para facilitar el tuning sin tocar lógica de negocio.
 EXCHANGE_ID = "binance"
 SYMBOL = "BTC/USDT"
 TIMEFRAME = "1m"  # Velas de 1 minuto para scalping
+MARKET_TYPE = "futures"  # "spot" o "futures" (perpetual)
+
+# ─── Apalancamiento ─────────────────────────────────────────────
+LEVERAGE = 3  # Apalancamiento máximo x3 (conservador)
 
 # ─── Paper Trading ───────────────────────────────────────────────
 INITIAL_BALANCE = 10_000.0  # USDT ficticios
 PAPER_MODE = True  # NUNCA operar en real sin cambio manual explícito
-FEE_RATE = 0.001  # 0.1% comisión simulada (taker fee Binance)
+FEE_RATE = 0.0004  # 0.04% comisión futuros Binance (taker)
 
 # ─── Gestión de Riesgo ──────────────────────────────────────────
 MAX_RISK_PER_TRADE = 0.01  # 1% del capital por operación (más trades, menos riesgo cada uno)

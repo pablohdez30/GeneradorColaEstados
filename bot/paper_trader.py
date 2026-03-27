@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import INITIAL_BALANCE, FEE_RATE, PAPER_MODE
+from config import INITIAL_BALANCE, FEE_RATE, PAPER_MODE, LEVERAGE, MARKET_TYPE
 from bot.risk_manager import RiskManager, Position
 from bot.logger import setup_logger, TradeLogger
 
@@ -50,8 +50,11 @@ class PaperTrader:
         self.open_positions: list[Position] = []
         self.closed_trades: list[dict] = []
         self.total_fees_paid = 0.0
+        self.leverage = LEVERAGE
+        self.market_type = MARKET_TYPE
 
-        logger.info(f"PaperTrader iniciado | Balance: {initial_balance} USDT | PAPER MODE")
+        mode_str = f"FUTUROS x{LEVERAGE}" if MARKET_TYPE == "futures" else "SPOT"
+        logger.info(f"PaperTrader iniciado | Balance: {initial_balance} USDT | {mode_str} | PAPER MODE")
 
     def execute_open(self, signal: dict, indicators: dict, regime: str) -> Position | None:
         """
@@ -92,15 +95,20 @@ class PaperTrader:
             logger.info("Position size = 0, trade cancelado")
             return None
 
-        # Simular comisión de apertura
-        fee = entry_price * quantity * FEE_RATE
+        # Simular comisión de apertura (sobre el valor nocional completo)
+        notional_value = entry_price * quantity
+        fee = notional_value * FEE_RATE
         self.balance -= fee
         self.total_fees_paid += fee
 
+        # Calcular margen requerido (con apalancamiento)
+        margin_required = notional_value / self.leverage if self.market_type == "futures" else notional_value
+
         # Justificación para el log
+        dir_label = f"LONG" if direction == "BUY" else "SHORT"
         reasons_text = " | ".join(signal.get("reasons", []))
         justification = (
-            f"Señal {direction} con {signal.get('confidence', 0):.0%} confluencia. "
+            f"Señal {dir_label} x{self.leverage} con {signal.get('confidence', 0):.0%} confluencia. "
             f"Razones: {reasons_text}"
         )
 
@@ -129,10 +137,11 @@ class PaperTrader:
         self.open_positions.append(position)
         self.risk_manager.positions = self.open_positions
 
+        dir_log = "LONG" if direction == "BUY" else "SHORT"
         logger.info(
-            f"OPEN #{trade_id} | {direction} @ {entry_price:.2f} | "
-            f"qty={quantity:.6f} | SL={stop_loss:.2f} | TP={take_profit:.2f} | "
-            f"fee={fee:.4f}"
+            f"OPEN #{trade_id} | {dir_log} x{self.leverage} @ {entry_price:.2f} | "
+            f"qty={quantity:.6f} | margin={margin_required:.2f} | "
+            f"SL={stop_loss:.2f} | TP={take_profit:.2f} | fee={fee:.4f}"
         )
         return position
 
@@ -147,13 +156,13 @@ class PaperTrader:
         slippage = price * random.uniform(-0.0001, 0.0001)
         exit_price = price + slippage
 
-        # Calcular PnL
-        if position.direction == "BUY":
+        # Calcular PnL (con apalancamiento, las ganancias/pérdidas se multiplican)
+        if position.direction == "BUY":  # LONG
             pnl = (exit_price - position.entry_price) * quantity
-        else:
+        else:  # SHORT
             pnl = (position.entry_price - exit_price) * quantity
 
-        # Comisión de cierre
+        # Comisión de cierre (sobre valor nocional)
         fee = exit_price * quantity * FEE_RATE
         pnl -= fee
         self.total_fees_paid += fee
