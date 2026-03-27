@@ -20,8 +20,8 @@ PAPER_MODE = True  # NUNCA operar en real sin cambio manual explícito
 FEE_RATE = 0.0004  # 0.04% comisión futuros Binance (taker)
 
 # ─── Gestión de Riesgo ──────────────────────────────────────────
-MAX_RISK_PER_TRADE = 0.01  # 1% del capital por operación (más trades, menos riesgo cada uno)
-MAX_OPEN_POSITIONS = 1  # Solo 1 posición abierta a la vez (scalping)
+MAX_RISK_PER_TRADE = 0.007  # 0.7% del capital por operación (compensar múltiples posiciones)
+MAX_OPEN_POSITIONS = 3  # Hasta 3 posiciones abiertas simultáneamente
 MAX_DRAWDOWN = 0.15  # 15% drawdown máximo antes de pausar
 TRAILING_STOP_PCT = 0.003  # 0.3% trailing stop (más ajustado)
 MAX_TRADE_DURATION_MINUTES = 60  # 1 hora máximo por operación

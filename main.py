@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (
     SYMBOL, TIMEFRAME, PAPER_MODE, INITIAL_BALANCE,
     ENABLE_SENTIMENT, ML_MIN_TRADES_FOR_TRAINING,
-    LEVERAGE, MARKET_TYPE,
+    LEVERAGE, MARKET_TYPE, MAX_OPEN_POSITIONS,
 )
 from bot.data_feed import DataFeed
 from bot.strategy_engine import StrategyEngine
@@ -158,8 +158,8 @@ def main():
             # 6. Gestionar posiciones abiertas PRIMERO
             paper_trader.check_and_manage_positions(current_price)
 
-            # 7. Si hay señal y no hay posición abierta → abrir trade
-            if signal["action"] in ("BUY", "SELL") and not paper_trader.open_positions:
+            # 7. Si hay señal y hay espacio para más posiciones → abrir trade
+            if signal["action"] in ("BUY", "SELL") and len(paper_trader.open_positions) < MAX_OPEN_POSITIONS:
                 position = paper_trader.execute_open(
                     signal, signal["indicators"], signal["regime"]
                 )
