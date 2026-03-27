@@ -335,10 +335,10 @@ class StrategyEngine:
             reasons.append("MACD cruce bajista")
 
         # ── 3. Bollinger Bands ─────────────────────────────────
-        if indicators["bb_position"] < 0.05:  # Precio tocando banda inferior
+        if indicators["bb_position"] < 0.15:  # Precio cerca de banda inferior
             buy_signals.append(("BB", 0.20))
             reasons.append("Precio en banda inferior BB")
-        elif indicators["bb_position"] > 0.95:  # Precio tocando banda superior
+        elif indicators["bb_position"] > 0.85:  # Precio cerca de banda superior
             sell_signals.append(("BB", 0.20))
             reasons.append("Precio en banda superior BB")
 
@@ -409,7 +409,7 @@ class StrategyEngine:
                 sell_score += SENTIMENT_WEIGHT
 
         # ── Decisión final ─────────────────────────────────────
-        min_confidence = 0.35  # Mínimo 35% de confluencia para operar
+        min_confidence = 0.25  # Mínimo 25% de confluencia para operar (más trades)
 
         if buy_score > sell_score and buy_score >= min_confidence:
             action = "BUY"

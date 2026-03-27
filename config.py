@@ -16,16 +16,16 @@ PAPER_MODE = True  # NUNCA operar en real sin cambio manual explícito
 FEE_RATE = 0.001  # 0.1% comisión simulada (taker fee Binance)
 
 # ─── Gestión de Riesgo ──────────────────────────────────────────
-MAX_RISK_PER_TRADE = 0.02  # 2% del capital por operación
+MAX_RISK_PER_TRADE = 0.01  # 1% del capital por operación (más trades, menos riesgo cada uno)
 MAX_OPEN_POSITIONS = 1  # Solo 1 posición abierta a la vez (scalping)
 MAX_DRAWDOWN = 0.15  # 15% drawdown máximo antes de pausar
-TRAILING_STOP_PCT = 0.005  # 0.5% trailing stop
-MAX_TRADE_DURATION_MINUTES = 240  # 4 horas máximo por operación
+TRAILING_STOP_PCT = 0.003  # 0.3% trailing stop (más ajustado)
+MAX_TRADE_DURATION_MINUTES = 60  # 1 hora máximo por operación
 
 # ─── Indicadores Técnicos ───────────────────────────────────────
 RSI_PERIOD = 14
-RSI_OVERSOLD = 30
-RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 35
+RSI_OVERBOUGHT = 65
 
 MACD_FAST = 12
 MACD_SLOW = 26
@@ -43,9 +43,9 @@ VOLUME_SPIKE_THRESHOLD = 1.5  # 1.5x volumen promedio = spike
 # ─── Take Profit Escalonado ─────────────────────────────────────
 # Cada tupla: (% del target, % de la posición a cerrar)
 TAKE_PROFIT_LEVELS = [
-    (0.003, 0.33),  # +0.3% → cerrar 33%
-    (0.006, 0.33),  # +0.6% → cerrar 33%
-    (0.010, 0.34),  # +1.0% → cerrar 34% restante
+    (0.002, 0.33),  # +0.2% → cerrar 33%
+    (0.004, 0.33),  # +0.4% → cerrar 33%
+    (0.007, 0.34),  # +0.7% → cerrar 34% restante
 ]
 
 # ─── Machine Learning ───────────────────────────────────────────

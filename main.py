@@ -211,7 +211,7 @@ def main():
 
             # Esperar hasta próximo tick (10 segundos entre iteraciones)
             elapsed = time.time() - loop_start
-            sleep_time = max(0, 10 - elapsed)
+            sleep_time = max(0, 5 - elapsed)
             time.sleep(sleep_time)
 
         except KeyboardInterrupt:
