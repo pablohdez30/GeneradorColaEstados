@@ -28,6 +28,8 @@ from config import (
     TAKE_PROFIT_LEVELS, FEE_RATE,
     LEVERAGE, LEVERAGE_LOW, LEVERAGE_MID, LEVERAGE_HIGH,
     COOLDOWN_AFTER_LOSS_SECONDS,
+    COOLDOWN_LOSS_SMALL, COOLDOWN_LOSS_MEDIUM,
+    COOLDOWN_SECONDS_MEDIUM, COOLDOWN_SECONDS_LARGE,
     RISK_LOW, RISK_MID, RISK_HIGH,
 )
 from bot.logger import setup_logger
@@ -39,7 +41,8 @@ class Position:
     """Representa una posición abierta con su estado completo."""
 
     def __init__(self, trade_id: int, direction: str, entry_price: float,
-                 quantity: float, stop_loss: float, take_profit: float):
+                 quantity: float, stop_loss: float, take_profit: float,
+                 adaptive_tp_levels: list = None):
         self.trade_id = trade_id
         self.direction = direction  # "BUY" o "SELL"
         self.entry_price = entry_price
@@ -52,6 +55,7 @@ class Position:
         self.tp_levels_hit = []  # Niveles de TP ya ejecutados
         self.highest_price = entry_price  # Para trailing stop (long)
         self.lowest_price = entry_price   # Para trailing stop (short)
+        self.adaptive_tp_levels = adaptive_tp_levels  # TPs adaptativos basados en ATR
         self.partial_pnl = 0.0  # PnL acumulado de cierres parciales
 
     @property
@@ -89,6 +93,7 @@ class RiskManager:
         self.total_trades = 0
         self.consecutive_losses = 0
         self.last_loss_time = 0  # Timestamp de última pérdida (para cooldown)
+        self.last_loss_pct = 0.0  # Magnitud de última pérdida (% del capital)
         logger.info(f"RiskManager inicializado | Balance: {initial_balance} USDT")
 
     # ── Apalancamiento Dinámico ────────────────────────────────
@@ -174,13 +179,22 @@ class RiskManager:
         if self.is_paused:
             return False, f"Trading pausado: {self.pause_reason}"
 
-        # Cooldown tras pérdida
+        # Cooldown proporcional tras pérdida
         import time
         if self.last_loss_time > 0:
-            elapsed = time.time() - self.last_loss_time
-            if elapsed < COOLDOWN_AFTER_LOSS_SECONDS:
-                remaining = int(COOLDOWN_AFTER_LOSS_SECONDS - elapsed)
-                return False, f"Cooldown activo: {remaining}s restantes tras pérdida"
+            # Determinar duración del cooldown según magnitud de pérdida
+            if self.last_loss_pct < COOLDOWN_LOSS_SMALL:
+                cooldown_secs = 0  # Pérdida pequeña: sin pausa
+            elif self.last_loss_pct < COOLDOWN_LOSS_MEDIUM:
+                cooldown_secs = COOLDOWN_SECONDS_MEDIUM  # 1 min
+            else:
+                cooldown_secs = COOLDOWN_SECONDS_LARGE  # 2 min
+
+            if cooldown_secs > 0:
+                elapsed = time.time() - self.last_loss_time
+                if elapsed < cooldown_secs:
+                    remaining = int(cooldown_secs - elapsed)
+                    return False, f"Cooldown activo: {remaining}s restantes (pérdida {self.last_loss_pct:.2%})"
 
         # Slot extra: si confianza >60%, permitir hasta MAX_OPEN_POSITIONS_EXTRA
         if confidence >= HIGH_CONFIDENCE_THRESHOLD:
@@ -305,9 +319,11 @@ class RiskManager:
         Take-profit escalonado: cierra porciones de la posición
         en diferentes niveles de beneficio.
 
-        Esto asegura beneficio parcial mientras deja correr el resto.
+        Usa niveles adaptativos (basados en ATR/régimen) si están disponibles,
+        si no, usa los niveles fijos de config.
         """
-        for i, (target_pct, close_pct) in enumerate(TAKE_PROFIT_LEVELS):
+        tp_levels = pos.adaptive_tp_levels if pos.adaptive_tp_levels else TAKE_PROFIT_LEVELS
+        for i, (target_pct, close_pct) in enumerate(tp_levels):
             if i in pos.tp_levels_hit:
                 continue
 
@@ -348,8 +364,14 @@ class RiskManager:
         self.total_trades += 1
         if pnl < 0:
             self.consecutive_losses += 1
-            self.last_loss_time = time.time()  # Activar cooldown
-            logger.info(f"Cooldown activado: {COOLDOWN_AFTER_LOSS_SECONDS}s tras pérdida")
+            self.last_loss_time = time.time()
+            self.last_loss_pct = abs(pnl) / self.current_balance if self.current_balance > 0 else 0
+            if self.last_loss_pct < COOLDOWN_LOSS_SMALL:
+                logger.info(f"Pérdida pequeña ({self.last_loss_pct:.2%}): sin cooldown")
+            elif self.last_loss_pct < COOLDOWN_LOSS_MEDIUM:
+                logger.info(f"Pérdida media ({self.last_loss_pct:.2%}): cooldown {COOLDOWN_SECONDS_MEDIUM}s")
+            else:
+                logger.info(f"Pérdida grande ({self.last_loss_pct:.2%}): cooldown {COOLDOWN_SECONDS_LARGE}s")
         else:
             self.consecutive_losses = 0
             self.last_loss_time = 0  # Reset cooldown tras ganancia

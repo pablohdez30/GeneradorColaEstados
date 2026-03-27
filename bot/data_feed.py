@@ -158,6 +158,23 @@ class DataFeed:
             logger.error(f"Error actualizando buffer: {e}")
             return self._candle_buffer
 
+    def fetch_ohlcv_higher_tf(self, timeframe: str = "5m", limit: int = 100) -> pd.DataFrame:
+        """
+        Obtiene velas de un timeframe superior para confirmación multi-timeframe.
+        Se usa para validar que la tendencia general confirma la señal de 1m.
+        """
+        try:
+            raw = self.exchange.fetch_ohlcv(self.symbol, timeframe, limit=limit)
+            df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            df.set_index("timestamp", inplace=True)
+            df = df.astype(float)
+            logger.debug(f"Fetch {timeframe}: {len(df)} velas obtenidas")
+            return df
+        except ccxt.BaseError as e:
+            logger.error(f"Error fetching {timeframe} OHLCV: {e}")
+            return pd.DataFrame()
+
     def detect_volume_spike(self, df: pd.DataFrame = None) -> bool:
         """
         Detecta si el volumen actual es significativamente mayor al promedio.

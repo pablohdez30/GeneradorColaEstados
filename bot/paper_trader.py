@@ -93,6 +93,9 @@ class PaperTrader:
         stop_loss = engine.compute_dynamic_stop_loss(entry_price, direction, atr, regime)
         take_profit = engine.compute_take_profit(entry_price, direction, atr)
 
+        # Take-profit escalonado adaptativo (basado en ATR + régimen)
+        adaptive_tp_levels = engine.compute_adaptive_tp_levels(atr, entry_price, regime)
+
         # Calcular cantidad con leverage dinámico y riesgo dinámico
         quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss, dynamic_leverage, confidence)
         if quantity == 0:
@@ -137,6 +140,7 @@ class PaperTrader:
             quantity=quantity,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            adaptive_tp_levels=adaptive_tp_levels,
         )
 
         self.open_positions.append(position)

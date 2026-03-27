@@ -292,7 +292,8 @@ class StrategyEngine:
         return indicators
 
     def generate_signal(self, df: pd.DataFrame, order_book: dict = None,
-                        ml_prediction: float = 0.0, sentiment: float = 0.5) -> dict:
+                        ml_prediction: float = 0.0, sentiment: float = 0.5,
+                        df_5m: pd.DataFrame = None) -> dict:
         """
         Genera señal de trading basada en confluencia de indicadores.
 
@@ -408,19 +409,42 @@ class StrategyEngine:
             elif sentiment > 75:  # Greed = oportunidad de venta
                 sell_score += SENTIMENT_WEIGHT
 
-        # ── Decisión final ─────────────────────────────────────
-        min_confidence = 0.25  # Mínimo 25% de confluencia para operar (más trades)
+        # ── 8. Confirmación Multi-Timeframe (5m) ──────────────
+        htf = self.check_higher_timeframe(df_5m) if df_5m is not None else {"trend": "NEUTRAL", "strength": 0.0}
 
-        if buy_score > sell_score and buy_score >= min_confidence:
+        if htf["trend"] == "BULLISH":
+            buy_score += 0.10  # Bonus por alineación con tendencia superior
+            reasons.append(f"5m confirma alcista ({htf['strength']:.0%})")
+        elif htf["trend"] == "BEARISH":
+            sell_score += 0.10
+            reasons.append(f"5m confirma bajista ({htf['strength']:.0%})")
+
+        # Penalizar señales contra la tendencia de 5m
+        if htf["trend"] == "BULLISH" and sell_score > buy_score:
+            sell_score *= 0.7  # Reducir 30% señales SHORT contra tendencia
+            reasons.append("SHORT penalizado: contra tendencia 5m")
+        elif htf["trend"] == "BEARISH" and buy_score > sell_score:
+            buy_score *= 0.7  # Reducir 30% señales LONG contra tendencia
+            reasons.append("LONG penalizado: contra tendencia 5m")
+
+        # ── Decisión final ─────────────────────────────────────
+        min_confidence = 0.30  # Mínimo 30% de confluencia para operar
+        min_margin = 1.3  # La señal ganadora debe ser 30% más fuerte que la contraria
+
+        # Comparar BUY vs SELL: solo operar si hay dirección clara
+        if buy_score >= min_confidence and buy_score > sell_score * min_margin:
             action = "BUY"
             confidence = min(buy_score, 1.0)
-        elif sell_score > buy_score and sell_score >= min_confidence:
+        elif sell_score >= min_confidence and sell_score > buy_score * min_margin:
             action = "SELL"
             confidence = min(sell_score, 1.0)
         else:
             action = "HOLD"
             confidence = 0.0
-            reasons.append("Confluencia insuficiente")
+            if buy_score > 0 and sell_score > 0:
+                reasons.append("Señales contradictorias, esperando claridad")
+            else:
+                reasons.append("Confluencia insuficiente")
 
         # Volumen confirma la señal (boost confidence)
         if action != "HOLD" and indicators["volume_ratio"] > VOLUME_SPIKE_THRESHOLD:
@@ -441,6 +465,43 @@ class StrategyEngine:
             f"reasons={', '.join(reasons[:3])}"
         )
         return signal
+
+    def check_higher_timeframe(self, df_5m: pd.DataFrame) -> dict:
+        """
+        Analiza timeframe superior (5m) para confirmar tendencia general.
+
+        Retorna:
+        {
+            "trend": "BULLISH" | "BEARISH" | "NEUTRAL",
+            "strength": float (0-1),
+        }
+        """
+        if df_5m.empty or len(df_5m) < MACD_SLOW + 5:
+            return {"trend": "NEUTRAL", "strength": 0.0}
+
+        close = df_5m["close"]
+
+        # EMA trend en 5m
+        ema_f = compute_ema(close, EMA_FAST)
+        ema_s = compute_ema(close, EMA_SLOW)
+        ema_bullish = ema_f.iloc[-1] > ema_s.iloc[-1]
+
+        # MACD direction en 5m
+        macd_line, signal_line, hist = compute_macd(close)
+        macd_bullish = hist.iloc[-1] > 0
+
+        # RSI en 5m
+        rsi = compute_rsi(close)
+        rsi_val = rsi.iloc[-1] if not rsi.empty else 50
+
+        if ema_bullish and macd_bullish:
+            strength = 0.8 + (0.2 if rsi_val > 50 else 0.0)
+            return {"trend": "BULLISH", "strength": round(strength, 2)}
+        elif not ema_bullish and not macd_bullish:
+            strength = 0.8 + (0.2 if rsi_val < 50 else 0.0)
+            return {"trend": "BEARISH", "strength": round(strength, 2)}
+        else:
+            return {"trend": "NEUTRAL", "strength": 0.3}
 
     def compute_dynamic_stop_loss(self, entry_price: float, direction: str,
                                    atr: float, regime: str) -> float:
@@ -471,3 +532,38 @@ class StrategyEngine:
             return entry_price + tp_distance
         else:
             return entry_price - tp_distance
+
+    @staticmethod
+    def compute_adaptive_tp_levels(atr: float, entry_price: float, regime: str) -> list[tuple[float, float]]:
+        """
+        Take-profit escalonado adaptativo basado en ATR y régimen.
+
+        En mercados volátiles los TPs se amplían para capturar más.
+        En mercados tranquilos se ajustan para asegurar beneficios.
+
+        Retorna lista de (target_pct, close_pct) como TAKE_PROFIT_LEVELS.
+        """
+        # ATR como porcentaje del precio
+        atr_pct = atr / entry_price if entry_price > 0 else 0.003
+
+        if regime == "HIGH_VOLATILITY":
+            # Mercado volátil: dejar correr más las ganancias
+            return [
+                (atr_pct * 1.0, 0.30),  # TP1: 1x ATR → cerrar 30%
+                (atr_pct * 2.0, 0.35),  # TP2: 2x ATR → cerrar 35%
+                (atr_pct * 3.5, 0.35),  # TP3: 3.5x ATR → cerrar 35%
+            ]
+        elif regime == "TRENDING":
+            # Tendencia: TPs intermedios, dejar correr un poco
+            return [
+                (atr_pct * 0.8, 0.33),  # TP1: 0.8x ATR
+                (atr_pct * 1.5, 0.33),  # TP2: 1.5x ATR
+                (atr_pct * 2.5, 0.34),  # TP3: 2.5x ATR
+            ]
+        else:
+            # Rango: TPs más ajustados, coger lo que hay
+            return [
+                (atr_pct * 0.5, 0.40),  # TP1: 0.5x ATR → cerrar más rápido
+                (atr_pct * 1.0, 0.35),  # TP2: 1x ATR
+                (atr_pct * 1.5, 0.25),  # TP3: 1.5x ATR
+            ]

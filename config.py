@@ -18,8 +18,12 @@ LEVERAGE_MID = 3    # Confianza 40-60% → x3
 LEVERAGE_HIGH = 4   # Confianza >60%   → x4
 LEVERAGE = 3        # Default (usado como fallback)
 
-# Cooldown tras pérdida (evitar overtrading)
-COOLDOWN_AFTER_LOSS_SECONDS = 120  # 2 minutos de pausa tras trade perdedor
+# Cooldown proporcional tras pérdida (evitar overtrading)
+COOLDOWN_LOSS_SMALL = 0.003   # Pérdida <0.3% del capital → sin cooldown
+COOLDOWN_LOSS_MEDIUM = 0.007  # Pérdida 0.3-0.7% → cooldown corto
+COOLDOWN_SECONDS_MEDIUM = 60  # 1 minuto tras pérdida media
+COOLDOWN_SECONDS_LARGE = 120  # 2 minutos tras pérdida grande (>0.7%)
+COOLDOWN_AFTER_LOSS_SECONDS = 120  # Fallback (mantener compatibilidad)
 
 # ─── Paper Trading ───────────────────────────────────────────────
 INITIAL_BALANCE = 10_000.0  # USDT ficticios
