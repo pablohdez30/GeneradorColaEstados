@@ -12,7 +12,14 @@ TIMEFRAME = "1m"  # Velas de 1 minuto para scalping
 MARKET_TYPE = "futures"  # "spot" o "futures" (perpetual)
 
 # ─── Apalancamiento ─────────────────────────────────────────────
-LEVERAGE = 3  # Apalancamiento máximo x3 (conservador)
+# Apalancamiento dinámico según confianza de la señal
+LEVERAGE_LOW = 2    # Confianza 25-40% → x2
+LEVERAGE_MID = 3    # Confianza 40-60% → x3
+LEVERAGE_HIGH = 4   # Confianza >60%   → x4
+LEVERAGE = 3        # Default (usado como fallback)
+
+# Cooldown tras pérdida (evitar overtrading)
+COOLDOWN_AFTER_LOSS_SECONDS = 120  # 2 minutos de pausa tras trade perdedor
 
 # ─── Paper Trading ───────────────────────────────────────────────
 INITIAL_BALANCE = 10_000.0  # USDT ficticios
@@ -21,7 +28,9 @@ FEE_RATE = 0.0004  # 0.04% comisión futuros Binance (taker)
 
 # ─── Gestión de Riesgo ──────────────────────────────────────────
 MAX_RISK_PER_TRADE = 0.007  # 0.7% del capital por operación (compensar múltiples posiciones)
-MAX_OPEN_POSITIONS = 3  # Hasta 3 posiciones abiertas simultáneamente
+MAX_OPEN_POSITIONS = 3  # Posiciones normales simultáneas
+MAX_OPEN_POSITIONS_EXTRA = 4  # Máximo absoluto (incluye slot extra para señales >60%)
+HIGH_CONFIDENCE_THRESHOLD = 0.60  # Señales con >60% confianza usan el slot extra
 MAX_DRAWDOWN = 0.15  # 15% drawdown máximo antes de pausar
 TRAILING_STOP_PCT = 0.003  # 0.3% trailing stop (más ajustado)
 MAX_TRADE_DURATION_MINUTES = 60  # 1 hora máximo por operación

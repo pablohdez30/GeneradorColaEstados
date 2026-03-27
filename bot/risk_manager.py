@@ -22,9 +22,12 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import (
-    MAX_RISK_PER_TRADE, MAX_OPEN_POSITIONS, MAX_DRAWDOWN,
+    MAX_RISK_PER_TRADE, MAX_OPEN_POSITIONS, MAX_OPEN_POSITIONS_EXTRA,
+    HIGH_CONFIDENCE_THRESHOLD, MAX_DRAWDOWN,
     TRAILING_STOP_PCT, MAX_TRADE_DURATION_MINUTES,
-    TAKE_PROFIT_LEVELS, FEE_RATE, LEVERAGE,
+    TAKE_PROFIT_LEVELS, FEE_RATE,
+    LEVERAGE, LEVERAGE_LOW, LEVERAGE_MID, LEVERAGE_HIGH,
+    COOLDOWN_AFTER_LOSS_SECONDS,
 )
 from bot.logger import setup_logger
 
@@ -84,22 +87,36 @@ class RiskManager:
         self.pause_reason = ""
         self.total_trades = 0
         self.consecutive_losses = 0
+        self.last_loss_time = 0  # Timestamp de última pérdida (para cooldown)
         logger.info(f"RiskManager inicializado | Balance: {initial_balance} USDT")
+
+    # ── Apalancamiento Dinámico ────────────────────────────────
+
+    @staticmethod
+    def get_dynamic_leverage(confidence: float) -> int:
+        """
+        Apalancamiento según confianza de la señal.
+        Más confianza → más apalancamiento → más beneficio potencial.
+        """
+        if confidence >= HIGH_CONFIDENCE_THRESHOLD:
+            return LEVERAGE_HIGH  # x4
+        elif confidence >= 0.40:
+            return LEVERAGE_MID   # x3
+        else:
+            return LEVERAGE_LOW   # x2
 
     # ── Cálculo de Tamaño de Posición ──────────────────────────
 
-    def calculate_position_size(self, entry_price: float, stop_loss: float) -> float:
+    def calculate_position_size(self, entry_price: float, stop_loss: float,
+                                leverage: int = None) -> float:
         """
         Position sizing basado en riesgo fijo del capital.
 
-        Con apalancamiento x3:
-        - El margen requerido es entry_price * quantity / LEVERAGE
-        - El riesgo sigue siendo el mismo % del capital
-        - Pero la posición es LEVERAGE veces más grande
-
-        Fórmula: quantity = (capital * max_risk) / |entry - stop_loss|
-        Límite: margen máximo = 95% del balance / LEVERAGE
+        El leverage se recibe dinámicamente según la confianza de la señal.
         """
+        if leverage is None:
+            leverage = LEVERAGE
+
         risk_amount = self.current_balance * MAX_RISK_PER_TRADE
         price_risk = abs(entry_price - stop_loss)
 
@@ -109,39 +126,53 @@ class RiskManager:
 
         quantity = risk_amount / price_risk
 
-        # Con apalancamiento, el límite de posición se multiplica por LEVERAGE
-        # pero el margen requerido sigue siendo balance / LEVERAGE
-        max_quantity = (self.current_balance * 0.95 * LEVERAGE) / entry_price
+        # Con apalancamiento, el límite de posición se multiplica por leverage
+        max_quantity = (self.current_balance * 0.95 * leverage) / entry_price
         quantity = min(quantity, max_quantity)
 
         # Mínimo viable
-        if quantity * entry_price < 10:  # Menos de 10 USDT no vale la pena
+        if quantity * entry_price < 10:
             return 0.0
 
-        margin_used = (quantity * entry_price) / LEVERAGE
+        margin_used = (quantity * entry_price) / leverage
         logger.debug(
             f"Position size: qty={quantity:.6f} | risk={risk_amount:.2f} USDT | "
-            f"price_risk={price_risk:.2f} | leverage={LEVERAGE}x | margin={margin_used:.2f}"
+            f"price_risk={price_risk:.2f} | leverage={leverage}x | margin={margin_used:.2f}"
         )
         return quantity
 
     # ── Validación Pre-Trade ───────────────────────────────────
 
-    def can_open_trade(self) -> tuple[bool, str]:
+    def can_open_trade(self, confidence: float = 0.0) -> tuple[bool, str]:
         """
         Verifica si es seguro abrir una nueva posición.
 
         Checks:
-        1. No exceder posiciones máximas abiertas
-        2. No estar en pausa (circuit breaker)
-        3. Drawdown dentro de límites
-        4. Balance suficiente
+        1. Cooldown tras pérdida (2 min)
+        2. No exceder posiciones máximas (3 normales + 1 extra si >60%)
+        3. No estar en pausa (circuit breaker)
+        4. Drawdown dentro de límites
+        5. Balance suficiente
         """
         if self.is_paused:
             return False, f"Trading pausado: {self.pause_reason}"
 
-        if len(self.positions) >= MAX_OPEN_POSITIONS:
-            return False, f"Máximo de posiciones alcanzado ({MAX_OPEN_POSITIONS})"
+        # Cooldown tras pérdida
+        import time
+        if self.last_loss_time > 0:
+            elapsed = time.time() - self.last_loss_time
+            if elapsed < COOLDOWN_AFTER_LOSS_SECONDS:
+                remaining = int(COOLDOWN_AFTER_LOSS_SECONDS - elapsed)
+                return False, f"Cooldown activo: {remaining}s restantes tras pérdida"
+
+        # Slot extra: si confianza >60%, permitir hasta MAX_OPEN_POSITIONS_EXTRA
+        if confidence >= HIGH_CONFIDENCE_THRESHOLD:
+            max_pos = MAX_OPEN_POSITIONS_EXTRA
+        else:
+            max_pos = MAX_OPEN_POSITIONS
+
+        if len(self.positions) >= max_pos:
+            return False, f"Máximo de posiciones alcanzado ({max_pos})"
 
         current_dd = self.current_drawdown()
         if current_dd >= MAX_DRAWDOWN:
@@ -296,11 +327,15 @@ class RiskManager:
 
     def record_trade_result(self, pnl: float):
         """Registra resultado de trade para circuit breaker y estadísticas."""
+        import time
         self.total_trades += 1
         if pnl < 0:
             self.consecutive_losses += 1
+            self.last_loss_time = time.time()  # Activar cooldown
+            logger.info(f"Cooldown activado: {COOLDOWN_AFTER_LOSS_SECONDS}s tras pérdida")
         else:
             self.consecutive_losses = 0
+            self.last_loss_time = 0  # Reset cooldown tras ganancia
 
         # Auto-reset de pausa por pérdidas consecutivas tras 10 minutos
         if self.is_paused and self.pause_reason.startswith("5 pérdidas"):

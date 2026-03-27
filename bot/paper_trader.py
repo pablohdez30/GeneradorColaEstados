@@ -67,17 +67,21 @@ class PaperTrader:
         4. Simular ejecución con slippage
         5. Registrar en log y DB
         """
-        can_trade, reason = self.risk_manager.can_open_trade()
+        confidence = signal.get("confidence", 0)
+        can_trade, reason = self.risk_manager.can_open_trade(confidence)
         if not can_trade:
             logger.info(f"Trade rechazado: {reason}")
             self.trade_logger.log_decision(
-                "REJECTED", reason, indicators, signal.get("confidence", 0)
+                "REJECTED", reason, indicators, confidence
             )
             return None
 
         direction = signal["action"]  # "BUY" o "SELL"
         base_price = indicators["price"]
         atr = indicators.get("atr", base_price * 0.005)  # Fallback: 0.5% del precio
+
+        # Apalancamiento dinámico según confianza
+        dynamic_leverage = self.risk_manager.get_dynamic_leverage(confidence)
 
         # Simular slippage (±0.01%)
         slippage = base_price * random.uniform(-0.0001, 0.0001)
@@ -89,8 +93,8 @@ class PaperTrader:
         stop_loss = engine.compute_dynamic_stop_loss(entry_price, direction, atr, regime)
         take_profit = engine.compute_take_profit(entry_price, direction, atr)
 
-        # Calcular cantidad
-        quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss)
+        # Calcular cantidad con leverage dinámico
+        quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss, dynamic_leverage)
         if quantity == 0:
             logger.info("Position size = 0, trade cancelado")
             return None
@@ -101,14 +105,14 @@ class PaperTrader:
         self.balance -= fee
         self.total_fees_paid += fee
 
-        # Calcular margen requerido (con apalancamiento)
-        margin_required = notional_value / self.leverage if self.market_type == "futures" else notional_value
+        # Calcular margen requerido (con apalancamiento dinámico)
+        margin_required = notional_value / dynamic_leverage if self.market_type == "futures" else notional_value
 
         # Justificación para el log
-        dir_label = f"LONG" if direction == "BUY" else "SHORT"
+        dir_label = "LONG" if direction == "BUY" else "SHORT"
         reasons_text = " | ".join(signal.get("reasons", []))
         justification = (
-            f"Señal {dir_label} x{self.leverage} con {signal.get('confidence', 0):.0%} confluencia. "
+            f"Señal {dir_label} x{dynamic_leverage} con {confidence:.0%} confluencia. "
             f"Razones: {reasons_text}"
         )
 
@@ -139,7 +143,7 @@ class PaperTrader:
 
         dir_log = "LONG" if direction == "BUY" else "SHORT"
         logger.info(
-            f"OPEN #{trade_id} | {dir_log} x{self.leverage} @ {entry_price:.2f} | "
+            f"OPEN #{trade_id} | {dir_log} x{dynamic_leverage} @ {entry_price:.2f} | "
             f"qty={quantity:.6f} | margin={margin_required:.2f} | "
             f"SL={stop_loss:.2f} | TP={take_profit:.2f} | fee={fee:.4f}"
         )

@@ -30,6 +30,7 @@ from config import (
     SYMBOL, TIMEFRAME, PAPER_MODE, INITIAL_BALANCE,
     ENABLE_SENTIMENT, ML_MIN_TRADES_FOR_TRAINING,
     LEVERAGE, MARKET_TYPE, MAX_OPEN_POSITIONS,
+    MAX_OPEN_POSITIONS_EXTRA, HIGH_CONFIDENCE_THRESHOLD,
 )
 from bot.data_feed import DataFeed
 from bot.strategy_engine import StrategyEngine
@@ -158,8 +159,10 @@ def main():
             # 6. Gestionar posiciones abiertas PRIMERO
             paper_trader.check_and_manage_positions(current_price)
 
-            # 7. Si hay señal y hay espacio para más posiciones → abrir trade
-            if signal["action"] in ("BUY", "SELL") and len(paper_trader.open_positions) < MAX_OPEN_POSITIONS:
+            # 7. Si hay señal → comprobar si hay espacio (el risk_manager decide según confianza)
+            confidence = signal.get("confidence", 0)
+            max_pos = MAX_OPEN_POSITIONS_EXTRA if confidence >= HIGH_CONFIDENCE_THRESHOLD else MAX_OPEN_POSITIONS
+            if signal["action"] in ("BUY", "SELL") and len(paper_trader.open_positions) < max_pos:
                 position = paper_trader.execute_open(
                     signal, signal["indicators"], signal["regime"]
                 )
