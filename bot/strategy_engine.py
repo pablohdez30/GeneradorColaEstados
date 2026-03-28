@@ -431,6 +431,11 @@ class StrategyEngine:
         min_confidence = 0.30  # Mínimo 30% de confluencia para operar
         min_margin = 1.3  # La señal ganadora debe ser 30% más fuerte que la contraria
 
+        # En RANGING exigir más confluencia (mercado lateral = más ruido)
+        if regime == "RANGING":
+            min_confidence = 0.40
+            min_margin = 1.5  # 50% más fuerte que la contraria
+
         # Comparar BUY vs SELL: solo operar si hay dirección clara
         if buy_score >= min_confidence and buy_score > sell_score * min_margin:
             action = "BUY"
@@ -511,7 +516,7 @@ class StrategyEngine:
         En alta volatilidad se amplía el stop para evitar que
         el ruido normal del mercado lo active prematuramente.
         """
-        multiplier = 1.5
+        multiplier = 1.0  # RANGING: stop ajustado (1x ATR)
         if regime == "HIGH_VOLATILITY":
             multiplier = 2.5  # Más holgura en alta vol
         elif regime == "TRENDING":
@@ -561,9 +566,9 @@ class StrategyEngine:
                 (atr_pct * 2.5, 0.34),  # TP3: 2.5x ATR
             ]
         else:
-            # Rango: TPs más ajustados, coger lo que hay
+            # Rango: TPs proporcionales al SL (1x ATR stop → TPs deben compensar)
             return [
-                (atr_pct * 0.5, 0.40),  # TP1: 0.5x ATR → cerrar más rápido
-                (atr_pct * 1.0, 0.35),  # TP2: 1x ATR
-                (atr_pct * 1.5, 0.25),  # TP3: 1.5x ATR
+                (atr_pct * 1.0, 0.40),  # TP1: 1x ATR → asegurar beneficio decente
+                (atr_pct * 1.5, 0.35),  # TP2: 1.5x ATR
+                (atr_pct * 2.0, 0.25),  # TP3: 2x ATR
             ]

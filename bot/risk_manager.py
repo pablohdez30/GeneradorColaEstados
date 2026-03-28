@@ -129,16 +129,23 @@ class RiskManager:
     # ── Cálculo de Tamaño de Posición ──────────────────────────
 
     def calculate_position_size(self, entry_price: float, stop_loss: float,
-                                leverage: int = None, confidence: float = 0.0) -> float:
+                                leverage: int = None, confidence: float = 0.0,
+                                regime: str = "UNKNOWN") -> float:
         """
         Position sizing basado en riesgo dinámico del capital.
 
         Combina riesgo dinámico (según confianza) con leverage dinámico.
+        En RANGING reduce el riesgo un 50% (mercado lateral = más ruido).
         """
         if leverage is None:
             leverage = LEVERAGE
 
         risk_pct = self.get_dynamic_risk(confidence)
+
+        # En RANGING: reducir riesgo un 50% (mercado lateral, señales menos fiables)
+        if regime == "RANGING":
+            risk_pct *= 0.5
+
         risk_amount = self.current_balance * risk_pct
         price_risk = abs(entry_price - stop_loss)
 

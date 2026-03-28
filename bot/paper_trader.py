@@ -96,8 +96,8 @@ class PaperTrader:
         # Take-profit escalonado adaptativo (basado en ATR + régimen)
         adaptive_tp_levels = engine.compute_adaptive_tp_levels(atr, entry_price, regime)
 
-        # Calcular cantidad con leverage dinámico y riesgo dinámico
-        quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss, dynamic_leverage, confidence)
+        # Calcular cantidad con leverage dinámico, riesgo dinámico y régimen
+        quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss, dynamic_leverage, confidence, regime)
         if quantity == 0:
             logger.info("Position size = 0, trade cancelado")
             return None
