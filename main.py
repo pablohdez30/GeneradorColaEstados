@@ -142,6 +142,14 @@ def main():
                 # Generar señal
                 signal = strategy.generate_signal(df, order_book, ml_prediction, sentiment_value)
 
+                # Registrar cada señal en la DB (para el dashboard)
+                paper_trader.trade_logger.log_decision(
+                    signal["action"],
+                    " | ".join(signal.get("reasons", [])[:3]),
+                    signal.get("indicators"),
+                    signal.get("confidence", 0),
+                )
+
                 # Si hay señal y no hay posición abierta → abrir
                 if signal["action"] in ("BUY", "SELL") and not paper_trader.open_positions:
                     position = paper_trader.execute_open(

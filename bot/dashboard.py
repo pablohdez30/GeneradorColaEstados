@@ -117,12 +117,12 @@ def run_dashboard():
         return
 
     st.set_page_config(
-        page_title="BTC Scalping Bot - Dashboard",
+        page_title="BTC Trend Following - Dashboard",
         page_icon="📊",
         layout="wide",
     )
 
-    st.title("📊 BTC Scalping Bot - Dashboard")
+    st.title("📊 BTC Trend Following Bot - Dashboard")
     st.markdown("---")
 
     # Auto-refresh cada 10 segundos
@@ -163,7 +163,10 @@ def run_dashboard():
     with col_right:
         st.subheader("Distribución de PnL")
         if not trades_df.empty and "pnl" in trades_df.columns:
-            st.bar_chart(trades_df["pnl"].tail(20))
+            # trades_df ya viene ORDER BY id DESC, así que .head(20) son los más recientes
+            recent_pnl = trades_df["pnl"].head(20).iloc[::-1]  # Invertir para orden cronológico
+            recent_pnl.index = range(1, len(recent_pnl) + 1)
+            st.bar_chart(recent_pnl)
         else:
             st.info("Sin trades cerrados aún.")
 
@@ -180,10 +183,26 @@ def run_dashboard():
         st.info("Sin trades registrados.")
 
     # ── Decisiones del Bot ─────────────────────────────────────
-    st.subheader("Últimas Decisiones")
+    st.subheader("Últimas Señales (cada 15 min)")
     decisions_df = load_decisions(20)
     if not decisions_df.empty:
-        st.dataframe(decisions_df, use_container_width=True)
+        display_cols = []
+        if "timestamp" in decisions_df.columns:
+            decisions_df["hora"] = pd.to_datetime(decisions_df["timestamp"]).dt.strftime("%H:%M")
+            display_cols.append("hora")
+        if "action" in decisions_df.columns:
+            display_cols.append("action")
+        if "confidence" in decisions_df.columns:
+            decisions_df["confianza"] = (decisions_df["confidence"] * 100).round(0).astype(str) + "%"
+            display_cols.append("confianza")
+        if "reason" in decisions_df.columns:
+            display_cols.append("reason")
+        if display_cols:
+            st.dataframe(decisions_df[display_cols], use_container_width=True)
+        else:
+            st.dataframe(decisions_df, use_container_width=True)
+    else:
+        st.info("Esperando primera señal...")
 
     # ── Estado del Modelo ML ───────────────────────────────────
     st.markdown("---")
