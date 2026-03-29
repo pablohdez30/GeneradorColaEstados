@@ -101,7 +101,7 @@ class PaperTrader:
         from bot.strategy_engine import StrategyEngine
         engine = StrategyEngine()
         stop_loss = engine.compute_dynamic_stop_loss(entry_price, direction, atr, regime)
-        take_profit = engine.compute_take_profit(entry_price, direction, atr)
+        take_profit = engine.compute_take_profit(entry_price, direction, atr, regime)
 
         # Take-profit escalonado adaptativo (basado en ATR + régimen)
         adaptive_tp_levels = engine.compute_adaptive_tp_levels(atr, entry_price, regime)

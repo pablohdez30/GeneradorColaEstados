@@ -533,11 +533,11 @@ class StrategyEngine:
         En alta volatilidad se amplía el stop para evitar que
         el ruido normal del mercado lo active prematuramente.
         """
-        multiplier = 1.0  # RANGING: stop ajustado (1x ATR)
+        multiplier = 1.0  # Base: 1x ATR
         if regime == "HIGH_VOLATILITY":
-            multiplier = 2.5  # Más holgura en alta vol
+            multiplier = 1.5
         elif regime == "TRENDING":
-            multiplier = 2.0  # Moderado en tendencia
+            multiplier = 1.2
 
         stop_distance = atr * multiplier
 
@@ -547,9 +547,19 @@ class StrategyEngine:
             return entry_price + stop_distance
 
     def compute_take_profit(self, entry_price: float, direction: str,
-                             atr: float) -> float:
-        """Take profit principal basado en ATR (ratio riesgo:beneficio 1:2)."""
-        tp_distance = atr * 3.0  # 3x ATR
+                             atr: float, regime: str = "UNKNOWN") -> float:
+        """
+        Take profit basado en ATR con ratio riesgo:beneficio POSITIVO.
+        TP siempre >= SL para que las ganancias compensen las pérdidas.
+        """
+        # TP = 1.5x a 2x el stop distance (R:R de 1:1.5 a 1:2)
+        if regime == "HIGH_VOLATILITY":
+            tp_distance = atr * 2.5  # Más margen en alta vol
+        elif regime == "TRENDING":
+            tp_distance = atr * 2.0  # Dejar correr en tendencia
+        else:
+            tp_distance = atr * 1.5  # RANGING: TP más cercano pero > SL
+
         if direction == "BUY":
             return entry_price + tp_distance
         else:
@@ -558,34 +568,14 @@ class StrategyEngine:
     @staticmethod
     def compute_adaptive_tp_levels(atr: float, entry_price: float, regime: str) -> list[tuple[float, float]]:
         """
-        Take-profit escalonado adaptativo basado en ATR y régimen.
-
-        En mercados volátiles los TPs se amplían para capturar más.
-        En mercados tranquilos se ajustan para asegurar beneficios.
-
-        Retorna lista de (target_pct, close_pct) como TAKE_PROFIT_LEVELS.
+        Take-profit: cerrar 100% en un solo nivel.
+        Sin escalonado — simplifica y asegura capturar el beneficio completo.
         """
-        # ATR como porcentaje del precio
         atr_pct = atr / entry_price if entry_price > 0 else 0.003
 
         if regime == "HIGH_VOLATILITY":
-            # Mercado volátil: dejar correr más las ganancias
-            return [
-                (atr_pct * 1.0, 0.30),  # TP1: 1x ATR → cerrar 30%
-                (atr_pct * 2.0, 0.35),  # TP2: 2x ATR → cerrar 35%
-                (atr_pct * 3.5, 0.35),  # TP3: 3.5x ATR → cerrar 35%
-            ]
+            return [(atr_pct * 2.5, 1.0)]  # Cierre total a 2.5x ATR
         elif regime == "TRENDING":
-            # Tendencia: TPs intermedios, dejar correr un poco
-            return [
-                (atr_pct * 0.8, 0.33),  # TP1: 0.8x ATR
-                (atr_pct * 1.5, 0.33),  # TP2: 1.5x ATR
-                (atr_pct * 2.5, 0.34),  # TP3: 2.5x ATR
-            ]
+            return [(atr_pct * 2.0, 1.0)]  # Cierre total a 2x ATR
         else:
-            # Rango: TPs proporcionales al SL (1x ATR stop → TPs deben compensar)
-            return [
-                (atr_pct * 1.0, 0.40),  # TP1: 1x ATR → asegurar beneficio decente
-                (atr_pct * 1.5, 0.35),  # TP2: 1.5x ATR
-                (atr_pct * 2.0, 0.25),  # TP3: 2x ATR
-            ]
+            return [(atr_pct * 1.5, 1.0)]  # Cierre total a 1.5x ATR

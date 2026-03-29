@@ -13,10 +13,10 @@ MARKET_TYPE = "futures"  # "spot" o "futures" (perpetual)
 
 # ─── Apalancamiento ─────────────────────────────────────────────
 # Apalancamiento dinámico según confianza de la señal
-LEVERAGE_LOW = 2    # Confianza 25-40% → x2
-LEVERAGE_MID = 3    # Confianza 40-60% → x3
-LEVERAGE_HIGH = 4   # Confianza >60%   → x4
-LEVERAGE = 3        # Default (usado como fallback)
+LEVERAGE_LOW = 1    # Confianza 25-40% → x1 (sin apalancamiento)
+LEVERAGE_MID = 2    # Confianza 40-60% → x2
+LEVERAGE_HIGH = 3   # Confianza >60%   → x3
+LEVERAGE = 2        # Default (usado como fallback)
 
 # Cooldown proporcional tras pérdida (evitar overtrading)
 COOLDOWN_LOSS_SMALL = 0.003   # Pérdida <0.3% del capital → sin cooldown
@@ -36,8 +36,8 @@ RISK_LOW = 0.005       # Confianza 25-40% → 0.5% del capital
 RISK_MID = 0.007       # Confianza 40-60% → 0.7% del capital
 RISK_HIGH = 0.010      # Confianza >60%   → 1.0% del capital
 MAX_RISK_PER_TRADE = 0.007  # Fallback por defecto
-MAX_OPEN_POSITIONS = 3  # Posiciones normales simultáneas
-MAX_OPEN_POSITIONS_EXTRA = 4  # Máximo absoluto (incluye slot extra para señales >60%)
+MAX_OPEN_POSITIONS = 2  # Posiciones normales simultáneas
+MAX_OPEN_POSITIONS_EXTRA = 3  # Máximo absoluto (incluye slot extra para señales >60%)
 HIGH_CONFIDENCE_THRESHOLD = 0.60  # Señales con >60% confianza usan el slot extra
 MAX_DRAWDOWN = 0.15  # 15% drawdown máximo antes de pausar
 TRAILING_STOP_PCT = 0.003  # 0.3% trailing stop (más ajustado)
