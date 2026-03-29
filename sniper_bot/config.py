@@ -58,7 +58,7 @@ TELEGRAM_CHAT_ID = "7300811946"
 
 # ─── Cooldown ────────────────────────────────────────────────────
 # No enviar más de 1 alerta cada X minutos (evitar spam)
-ALERT_COOLDOWN_MINUTES = 60  # Mínimo 1 hora entre alertas
+ALERT_COOLDOWN_MINUTES = 240  # Mínimo 4 horas entre alertas
 
 # ─── Sentimiento ─────────────────────────────────────────────────
 FEAR_GREED_API = "https://api.alternative.me/fng/"
