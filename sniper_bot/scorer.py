@@ -147,11 +147,9 @@ class SignalScorer:
             sell_score += SCORES["multi_tf_aligned"]
             sell_reasons.append(f"{bearish_tfs} timeframes confirman bajista")
 
-        # ── Decisión final ────────────────────────────────────
+        # ── Decisión final (solo LONG - usuario opera en Spot) ──
         if buy_score >= MIN_SCORE_TO_ALERT and buy_score > sell_score:
             return self._build_signal("LONG", buy_score, buy_reasons, primary, fg)
-        elif sell_score >= MIN_SCORE_TO_ALERT and sell_score > buy_score:
-            return self._build_signal("SHORT", sell_score, sell_reasons, primary, fg)
 
         return None
 
