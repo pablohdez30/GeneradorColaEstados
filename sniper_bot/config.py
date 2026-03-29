@@ -53,8 +53,8 @@ STOP_ATR_MULTIPLIER = 1.5    # SL = 1.5x ATR
 TP_ATR_MULTIPLIER = 3.0      # TP = 3x ATR (ratio 1:2)
 
 # ─── Telegram ────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = ""      # Rellenar con token del bot de Telegram
-TELEGRAM_CHAT_ID = ""        # Rellenar con tu chat ID
+TELEGRAM_BOT_TOKEN = "8208306630:AAFAPGUB0GIv1Szuj33pY2VZnX_KDPHWRnM"
+TELEGRAM_CHAT_ID = "7300811946"
 
 # ─── Cooldown ────────────────────────────────────────────────────
 # No enviar más de 1 alerta cada X minutos (evitar spam)
