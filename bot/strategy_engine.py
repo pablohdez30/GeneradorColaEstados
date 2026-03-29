@@ -292,8 +292,7 @@ class StrategyEngine:
         return indicators
 
     def generate_signal(self, df: pd.DataFrame, order_book: dict = None,
-                        ml_prediction: float = 0.0, sentiment: float = 0.5,
-                        df_5m: pd.DataFrame = None) -> dict:
+                        ml_prediction: float = 0.0, sentiment: float = 0.5) -> dict:
         """
         Genera señal de trading basada en confluencia de indicadores.
 
@@ -409,64 +408,19 @@ class StrategyEngine:
             elif sentiment > 75:  # Greed = oportunidad de venta
                 sell_score += SENTIMENT_WEIGHT
 
-        # ── 8. Confirmación Multi-Timeframe (5m) ──────────────
-        htf = self.check_higher_timeframe(df_5m) if df_5m is not None else {"trend": "NEUTRAL", "strength": 0.0}
-
-        if htf["trend"] == "BULLISH":
-            buy_score += 0.05  # Bonus reducido (era 0.10, demasiado dominante)
-            reasons.append(f"5m confirma alcista ({htf['strength']:.0%})")
-        elif htf["trend"] == "BEARISH":
-            sell_score += 0.05
-            reasons.append(f"5m confirma bajista ({htf['strength']:.0%})")
-
-        # Penalizar señales contra la tendencia de 5m (reducido de 30% a 15%)
-        if htf["trend"] == "BULLISH" and sell_score > buy_score:
-            sell_score *= 0.85
-            reasons.append("SHORT penalizado: contra tendencia 5m")
-        elif htf["trend"] == "BEARISH" and buy_score > sell_score:
-            buy_score *= 0.85
-            reasons.append("LONG penalizado: contra tendencia 5m")
-
-        # ── 9. Protección RSI: no operar contra extremos ─────
-        # Si RSI está en sobreventa (<30), NO shortear (probable rebote)
-        # Si RSI está en sobrecompra (>70), NO comprar (probable caída)
-        rsi_val = indicators["rsi"]
-        if rsi_val < 30:
-            sell_score *= 0.3  # Penalizar shorts un 70% en sobreventa extrema
-            reasons.append(f"SHORT bloqueado: RSI sobreventa extrema ({rsi_val:.0f})")
-        elif rsi_val < RSI_OVERSOLD:
-            sell_score *= 0.6  # Penalizar shorts un 40% en sobreventa
-            reasons.append(f"SHORT penalizado: RSI sobreventa ({rsi_val:.0f})")
-        elif rsi_val > 70:
-            buy_score *= 0.3  # Penalizar longs un 70% en sobrecompra extrema
-            reasons.append(f"LONG bloqueado: RSI sobrecompra extrema ({rsi_val:.0f})")
-        elif rsi_val > RSI_OVERBOUGHT:
-            buy_score *= 0.6  # Penalizar longs un 40% en sobrecompra
-            reasons.append(f"LONG penalizado: RSI sobrecompra ({rsi_val:.0f})")
-
         # ── Decisión final ─────────────────────────────────────
-        min_confidence = 0.30  # Mínimo 30% de confluencia para operar
-        min_margin = 1.3  # La señal ganadora debe ser 30% más fuerte que la contraria
+        min_confidence = 0.25  # Mínimo 25% de confluencia para operar (más trades)
 
-        # En RANGING exigir más confluencia (mercado lateral = más ruido)
-        if regime == "RANGING":
-            min_confidence = 0.40
-            min_margin = 1.5  # 50% más fuerte que la contraria
-
-        # Comparar BUY vs SELL: solo operar si hay dirección clara
-        if buy_score >= min_confidence and buy_score > sell_score * min_margin:
+        if buy_score > sell_score and buy_score >= min_confidence:
             action = "BUY"
             confidence = min(buy_score, 1.0)
-        elif sell_score >= min_confidence and sell_score > buy_score * min_margin:
+        elif sell_score > buy_score and sell_score >= min_confidence:
             action = "SELL"
             confidence = min(sell_score, 1.0)
         else:
             action = "HOLD"
             confidence = 0.0
-            if buy_score > 0 and sell_score > 0:
-                reasons.append("Señales contradictorias, esperando claridad")
-            else:
-                reasons.append("Confluencia insuficiente")
+            reasons.append("Confluencia insuficiente")
 
         # Volumen confirma la señal (boost confidence)
         if action != "HOLD" and indicators["volume_ratio"] > VOLUME_SPIKE_THRESHOLD:
@@ -488,43 +442,6 @@ class StrategyEngine:
         )
         return signal
 
-    def check_higher_timeframe(self, df_5m: pd.DataFrame) -> dict:
-        """
-        Analiza timeframe superior (5m) para confirmar tendencia general.
-
-        Retorna:
-        {
-            "trend": "BULLISH" | "BEARISH" | "NEUTRAL",
-            "strength": float (0-1),
-        }
-        """
-        if df_5m.empty or len(df_5m) < MACD_SLOW + 5:
-            return {"trend": "NEUTRAL", "strength": 0.0}
-
-        close = df_5m["close"]
-
-        # EMA trend en 5m
-        ema_f = compute_ema(close, EMA_FAST)
-        ema_s = compute_ema(close, EMA_SLOW)
-        ema_bullish = ema_f.iloc[-1] > ema_s.iloc[-1]
-
-        # MACD direction en 5m
-        macd_line, signal_line, hist = compute_macd(close)
-        macd_bullish = hist.iloc[-1] > 0
-
-        # RSI en 5m
-        rsi = compute_rsi(close)
-        rsi_val = rsi.iloc[-1] if not rsi.empty else 50
-
-        if ema_bullish and macd_bullish:
-            strength = 0.8 + (0.2 if rsi_val > 50 else 0.0)
-            return {"trend": "BULLISH", "strength": round(strength, 2)}
-        elif not ema_bullish and not macd_bullish:
-            strength = 0.8 + (0.2 if rsi_val < 50 else 0.0)
-            return {"trend": "BEARISH", "strength": round(strength, 2)}
-        else:
-            return {"trend": "NEUTRAL", "strength": 0.3}
-
     def compute_dynamic_stop_loss(self, entry_price: float, direction: str,
                                    atr: float, regime: str) -> float:
         """
@@ -533,11 +450,11 @@ class StrategyEngine:
         En alta volatilidad se amplía el stop para evitar que
         el ruido normal del mercado lo active prematuramente.
         """
-        multiplier = 1.0  # Base: 1x ATR
+        multiplier = 1.5
         if regime == "HIGH_VOLATILITY":
-            multiplier = 1.5
+            multiplier = 2.5  # Más holgura en alta vol
         elif regime == "TRENDING":
-            multiplier = 1.2
+            multiplier = 2.0  # Moderado en tendencia
 
         stop_distance = atr * multiplier
 
@@ -547,35 +464,10 @@ class StrategyEngine:
             return entry_price + stop_distance
 
     def compute_take_profit(self, entry_price: float, direction: str,
-                             atr: float, regime: str = "UNKNOWN") -> float:
-        """
-        Take profit basado en ATR con ratio riesgo:beneficio POSITIVO.
-        TP siempre >= SL para que las ganancias compensen las pérdidas.
-        """
-        # TP = 1.5x a 2x el stop distance (R:R de 1:1.5 a 1:2)
-        if regime == "HIGH_VOLATILITY":
-            tp_distance = atr * 2.5  # Más margen en alta vol
-        elif regime == "TRENDING":
-            tp_distance = atr * 2.0  # Dejar correr en tendencia
-        else:
-            tp_distance = atr * 1.5  # RANGING: TP más cercano pero > SL
-
+                             atr: float) -> float:
+        """Take profit principal basado en ATR (ratio riesgo:beneficio 1:2)."""
+        tp_distance = atr * 3.0  # 3x ATR
         if direction == "BUY":
             return entry_price + tp_distance
         else:
             return entry_price - tp_distance
-
-    @staticmethod
-    def compute_adaptive_tp_levels(atr: float, entry_price: float, regime: str) -> list[tuple[float, float]]:
-        """
-        Take-profit: cerrar 100% en un solo nivel.
-        Sin escalonado — simplifica y asegura capturar el beneficio completo.
-        """
-        atr_pct = atr / entry_price if entry_price > 0 else 0.003
-
-        if regime == "HIGH_VOLATILITY":
-            return [(atr_pct * 2.5, 1.0)]  # Cierre total a 2.5x ATR
-        elif regime == "TRENDING":
-            return [(atr_pct * 2.0, 1.0)]  # Cierre total a 2x ATR
-        else:
-            return [(atr_pct * 1.5, 1.0)]  # Cierre total a 1.5x ATR

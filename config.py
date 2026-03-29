@@ -12,18 +12,7 @@ TIMEFRAME = "1m"  # Velas de 1 minuto para scalping
 MARKET_TYPE = "futures"  # "spot" o "futures" (perpetual)
 
 # ─── Apalancamiento ─────────────────────────────────────────────
-# Apalancamiento dinámico según confianza de la señal
-LEVERAGE_LOW = 1    # Confianza 25-40% → x1 (sin apalancamiento)
-LEVERAGE_MID = 2    # Confianza 40-60% → x2
-LEVERAGE_HIGH = 3   # Confianza >60%   → x3
-LEVERAGE = 2        # Default (usado como fallback)
-
-# Cooldown proporcional tras pérdida (evitar overtrading)
-COOLDOWN_LOSS_SMALL = 0.003   # Pérdida <0.3% del capital → sin cooldown
-COOLDOWN_LOSS_MEDIUM = 0.007  # Pérdida 0.3-0.7% → cooldown corto
-COOLDOWN_SECONDS_MEDIUM = 60  # 1 minuto tras pérdida media
-COOLDOWN_SECONDS_LARGE = 120  # 2 minutos tras pérdida grande (>0.7%)
-COOLDOWN_AFTER_LOSS_SECONDS = 120  # Fallback (mantener compatibilidad)
+LEVERAGE = 3  # Apalancamiento máximo x3 (conservador)
 
 # ─── Paper Trading ───────────────────────────────────────────────
 INITIAL_BALANCE = 10_000.0  # USDT ficticios
@@ -31,14 +20,8 @@ PAPER_MODE = True  # NUNCA operar en real sin cambio manual explícito
 FEE_RATE = 0.0004  # 0.04% comisión futuros Binance (taker)
 
 # ─── Gestión de Riesgo ──────────────────────────────────────────
-# Riesgo dinámico según confianza (confidence-based sizing)
-RISK_LOW = 0.005       # Confianza 25-40% → 0.5% del capital
-RISK_MID = 0.007       # Confianza 40-60% → 0.7% del capital
-RISK_HIGH = 0.010      # Confianza >60%   → 1.0% del capital
-MAX_RISK_PER_TRADE = 0.007  # Fallback por defecto
-MAX_OPEN_POSITIONS = 2  # Posiciones normales simultáneas
-MAX_OPEN_POSITIONS_EXTRA = 3  # Máximo absoluto (incluye slot extra para señales >60%)
-HIGH_CONFIDENCE_THRESHOLD = 0.60  # Señales con >60% confianza usan el slot extra
+MAX_RISK_PER_TRADE = 0.01  # 1% del capital por operación (más trades, menos riesgo cada uno)
+MAX_OPEN_POSITIONS = 1  # Solo 1 posición abierta a la vez (scalping)
 MAX_DRAWDOWN = 0.15  # 15% drawdown máximo antes de pausar
 TRAILING_STOP_PCT = 0.003  # 0.3% trailing stop (más ajustado)
 MAX_TRADE_DURATION_MINUTES = 60  # 1 hora máximo por operación

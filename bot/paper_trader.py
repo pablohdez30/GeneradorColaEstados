@@ -52,7 +52,6 @@ class PaperTrader:
         self.total_fees_paid = 0.0
         self.leverage = LEVERAGE
         self.market_type = MARKET_TYPE
-        self.last_open_time = 0  # Timestamp última apertura (evitar apilar trades)
 
         mode_str = f"FUTUROS x{LEVERAGE}" if MARKET_TYPE == "futures" else "SPOT"
         logger.info(f"PaperTrader iniciado | Balance: {initial_balance} USDT | {mode_str} | PAPER MODE")
@@ -68,30 +67,17 @@ class PaperTrader:
         4. Simular ejecución con slippage
         5. Registrar en log y DB
         """
-        confidence = signal.get("confidence", 0)
-
-        # Cooldown mínimo entre aperturas: 30 segundos
-        # Evita abrir 3 trades idénticos en 10 segundos
-        import time
-        time_since_last = time.time() - self.last_open_time
-        if time_since_last < 30:
-            logger.debug(f"Esperando {30 - time_since_last:.0f}s entre aperturas")
-            return None
-
-        can_trade, reason = self.risk_manager.can_open_trade(confidence)
+        can_trade, reason = self.risk_manager.can_open_trade()
         if not can_trade:
             logger.info(f"Trade rechazado: {reason}")
             self.trade_logger.log_decision(
-                "REJECTED", reason, indicators, confidence
+                "REJECTED", reason, indicators, signal.get("confidence", 0)
             )
             return None
 
         direction = signal["action"]  # "BUY" o "SELL"
         base_price = indicators["price"]
         atr = indicators.get("atr", base_price * 0.005)  # Fallback: 0.5% del precio
-
-        # Apalancamiento dinámico según confianza
-        dynamic_leverage = self.risk_manager.get_dynamic_leverage(confidence)
 
         # Simular slippage (±0.01%)
         slippage = base_price * random.uniform(-0.0001, 0.0001)
@@ -101,13 +87,10 @@ class PaperTrader:
         from bot.strategy_engine import StrategyEngine
         engine = StrategyEngine()
         stop_loss = engine.compute_dynamic_stop_loss(entry_price, direction, atr, regime)
-        take_profit = engine.compute_take_profit(entry_price, direction, atr, regime)
+        take_profit = engine.compute_take_profit(entry_price, direction, atr)
 
-        # Take-profit escalonado adaptativo (basado en ATR + régimen)
-        adaptive_tp_levels = engine.compute_adaptive_tp_levels(atr, entry_price, regime)
-
-        # Calcular cantidad con leverage dinámico, riesgo dinámico y régimen
-        quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss, dynamic_leverage, confidence, regime)
+        # Calcular cantidad
+        quantity = self.risk_manager.calculate_position_size(entry_price, stop_loss)
         if quantity == 0:
             logger.info("Position size = 0, trade cancelado")
             return None
@@ -118,15 +101,14 @@ class PaperTrader:
         self.balance -= fee
         self.total_fees_paid += fee
 
-        # Calcular margen requerido (con apalancamiento dinámico)
-        margin_required = notional_value / dynamic_leverage if self.market_type == "futures" else notional_value
+        # Calcular margen requerido (con apalancamiento)
+        margin_required = notional_value / self.leverage if self.market_type == "futures" else notional_value
 
         # Justificación para el log
-        dir_label = "LONG" if direction == "BUY" else "SHORT"
-        risk_pct = self.risk_manager.get_dynamic_risk(confidence)
+        dir_label = f"LONG" if direction == "BUY" else "SHORT"
         reasons_text = " | ".join(signal.get("reasons", []))
         justification = (
-            f"Señal {dir_label} x{dynamic_leverage} riesgo={risk_pct:.1%} con {confidence:.0%} confluencia. "
+            f"Señal {dir_label} x{self.leverage} con {signal.get('confidence', 0):.0%} confluencia. "
             f"Razones: {reasons_text}"
         )
 
@@ -150,16 +132,14 @@ class PaperTrader:
             quantity=quantity,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            adaptive_tp_levels=adaptive_tp_levels,
         )
 
         self.open_positions.append(position)
-        self.last_open_time = time.time()  # Registrar timestamp de apertura
         self.risk_manager.positions = self.open_positions
 
         dir_log = "LONG" if direction == "BUY" else "SHORT"
         logger.info(
-            f"OPEN #{trade_id} | {dir_log} x{dynamic_leverage} risk={risk_pct:.1%} @ {entry_price:.2f} | "
+            f"OPEN #{trade_id} | {dir_log} x{self.leverage} @ {entry_price:.2f} | "
             f"qty={quantity:.6f} | margin={margin_required:.2f} | "
             f"SL={stop_loss:.2f} | TP={take_profit:.2f} | fee={fee:.4f}"
         )

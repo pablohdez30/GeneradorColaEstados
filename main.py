@@ -29,8 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (
     SYMBOL, TIMEFRAME, PAPER_MODE, INITIAL_BALANCE,
     ENABLE_SENTIMENT, ML_MIN_TRADES_FOR_TRAINING,
-    LEVERAGE, MARKET_TYPE, MAX_OPEN_POSITIONS,
-    MAX_OPEN_POSITIONS_EXTRA, HIGH_CONFIDENCE_THRESHOLD,
+    LEVERAGE, MARKET_TYPE,
 )
 from bot.data_feed import DataFeed
 from bot.strategy_engine import StrategyEngine
@@ -111,8 +110,6 @@ def main():
     sentiment_value = 50  # Neutral
     last_report_time = time.time()
     report_interval = 3600  # Reporte cada hora
-    last_5m_fetch = 0
-    df_5m = None  # Velas de 5m para confirmación multi-timeframe
 
     logger.info("Bot iniciado. Entrando en loop principal...")
     logger.info("Presiona Ctrl+C para detener.")
@@ -135,14 +132,6 @@ def main():
             # 2. Obtener order book
             order_book = data_feed.fetch_order_book(depth=20)
 
-            # 2.5. Velas 5m para confirmación multi-timeframe (cada 60s)
-            if time.time() - last_5m_fetch > 60:
-                try:
-                    df_5m = data_feed.fetch_ohlcv_higher_tf("5m", limit=100)
-                    last_5m_fetch = time.time()
-                except Exception:
-                    pass  # Seguir con df_5m anterior si falla
-
             # 3. Sentimiento (cada 15 minutos para no saturar API)
             if ENABLE_SENTIMENT and (time.time() - last_sentiment_check > 900):
                 sentiment_value = sentiment_analyzer.get_fear_greed_index()
@@ -161,18 +150,16 @@ def main():
                 if ml_agent.training_count >= 3:
                     strategy.ml_weight = min(0.15, ml_agent.training_count * 0.02)
 
-            # 5. Generar señal de trading (con confirmación multi-timeframe)
+            # 5. Generar señal de trading
             signal = strategy.generate_signal(
-                df, order_book, ml_prediction, sentiment_value, df_5m
+                df, order_book, ml_prediction, sentiment_value
             )
 
             # 6. Gestionar posiciones abiertas PRIMERO
             paper_trader.check_and_manage_positions(current_price)
 
-            # 7. Si hay señal → comprobar si hay espacio (el risk_manager decide según confianza)
-            confidence = signal.get("confidence", 0)
-            max_pos = MAX_OPEN_POSITIONS_EXTRA if confidence >= HIGH_CONFIDENCE_THRESHOLD else MAX_OPEN_POSITIONS
-            if signal["action"] in ("BUY", "SELL") and len(paper_trader.open_positions) < max_pos:
+            # 7. Si hay señal y no hay posición abierta → abrir trade
+            if signal["action"] in ("BUY", "SELL") and not paper_trader.open_positions:
                 position = paper_trader.execute_open(
                     signal, signal["indicators"], signal["regime"]
                 )
