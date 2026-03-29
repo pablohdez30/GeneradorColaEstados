@@ -413,19 +413,36 @@ class StrategyEngine:
         htf = self.check_higher_timeframe(df_5m) if df_5m is not None else {"trend": "NEUTRAL", "strength": 0.0}
 
         if htf["trend"] == "BULLISH":
-            buy_score += 0.10  # Bonus por alineación con tendencia superior
+            buy_score += 0.05  # Bonus reducido (era 0.10, demasiado dominante)
             reasons.append(f"5m confirma alcista ({htf['strength']:.0%})")
         elif htf["trend"] == "BEARISH":
-            sell_score += 0.10
+            sell_score += 0.05
             reasons.append(f"5m confirma bajista ({htf['strength']:.0%})")
 
-        # Penalizar señales contra la tendencia de 5m
+        # Penalizar señales contra la tendencia de 5m (reducido de 30% a 15%)
         if htf["trend"] == "BULLISH" and sell_score > buy_score:
-            sell_score *= 0.7  # Reducir 30% señales SHORT contra tendencia
+            sell_score *= 0.85
             reasons.append("SHORT penalizado: contra tendencia 5m")
         elif htf["trend"] == "BEARISH" and buy_score > sell_score:
-            buy_score *= 0.7  # Reducir 30% señales LONG contra tendencia
+            buy_score *= 0.85
             reasons.append("LONG penalizado: contra tendencia 5m")
+
+        # ── 9. Protección RSI: no operar contra extremos ─────
+        # Si RSI está en sobreventa (<30), NO shortear (probable rebote)
+        # Si RSI está en sobrecompra (>70), NO comprar (probable caída)
+        rsi_val = indicators["rsi"]
+        if rsi_val < 30:
+            sell_score *= 0.3  # Penalizar shorts un 70% en sobreventa extrema
+            reasons.append(f"SHORT bloqueado: RSI sobreventa extrema ({rsi_val:.0f})")
+        elif rsi_val < RSI_OVERSOLD:
+            sell_score *= 0.6  # Penalizar shorts un 40% en sobreventa
+            reasons.append(f"SHORT penalizado: RSI sobreventa ({rsi_val:.0f})")
+        elif rsi_val > 70:
+            buy_score *= 0.3  # Penalizar longs un 70% en sobrecompra extrema
+            reasons.append(f"LONG bloqueado: RSI sobrecompra extrema ({rsi_val:.0f})")
+        elif rsi_val > RSI_OVERBOUGHT:
+            buy_score *= 0.6  # Penalizar longs un 40% en sobrecompra
+            reasons.append(f"LONG penalizado: RSI sobrecompra ({rsi_val:.0f})")
 
         # ── Decisión final ─────────────────────────────────────
         min_confidence = 0.30  # Mínimo 30% de confluencia para operar

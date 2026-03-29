@@ -52,6 +52,7 @@ class PaperTrader:
         self.total_fees_paid = 0.0
         self.leverage = LEVERAGE
         self.market_type = MARKET_TYPE
+        self.last_open_time = 0  # Timestamp última apertura (evitar apilar trades)
 
         mode_str = f"FUTUROS x{LEVERAGE}" if MARKET_TYPE == "futures" else "SPOT"
         logger.info(f"PaperTrader iniciado | Balance: {initial_balance} USDT | {mode_str} | PAPER MODE")
@@ -68,6 +69,15 @@ class PaperTrader:
         5. Registrar en log y DB
         """
         confidence = signal.get("confidence", 0)
+
+        # Cooldown mínimo entre aperturas: 30 segundos
+        # Evita abrir 3 trades idénticos en 10 segundos
+        import time
+        time_since_last = time.time() - self.last_open_time
+        if time_since_last < 30:
+            logger.debug(f"Esperando {30 - time_since_last:.0f}s entre aperturas")
+            return None
+
         can_trade, reason = self.risk_manager.can_open_trade(confidence)
         if not can_trade:
             logger.info(f"Trade rechazado: {reason}")
@@ -144,6 +154,7 @@ class PaperTrader:
         )
 
         self.open_positions.append(position)
+        self.last_open_time = time.time()  # Registrar timestamp de apertura
         self.risk_manager.positions = self.open_positions
 
         dir_log = "LONG" if direction == "BUY" else "SHORT"
