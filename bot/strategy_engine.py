@@ -1,26 +1,14 @@
 """
-strategy_engine.py - Lógica de señales y condiciones de entrada/salida.
+strategy_engine.py - Estrategia Trend Following simplificada.
 
-Diseño de la estrategia combinada (Multi-Indicator Confluence):
-───────────────────────────────────────────────────────────────
-Se requiere CONFLUENCIA de al menos 2 de 4 indicadores para generar señal.
-Esto reduce los falsos positivos típicos de depender de un solo indicador.
+Filosofía: MENOS ES MÁS
+─────────────────────────
+Solo 2 indicadores para decidir + 1 filtro:
+1. EMA 9/21 cross → dirección del trade
+2. ADX > 20 → confirma que hay tendencia (si no, NO operar)
+3. RSI → filtro de seguridad (no comprar sobrecomprado, no vender sobrevendido)
 
-Indicadores utilizados:
-1. RSI (14): Identifica zonas de sobreventa/sobrecompra
-2. MACD (12,26,9): Detecta cambios de momentum
-3. Bollinger Bands (20,2): Identifica reversiones desde extremos
-4. EMA Cross (9/21): Confirma dirección de tendencia
-
-Señales adicionales:
-- Patrones de velas japonesas (hammer, engulfing, doji)
-- Volumen relativo (spikes indican interés institucional)
-- Order book imbalance (presión compradora/vendedora)
-
-Régimen de mercado:
-- TRENDING: Se priorizan señales de momentum (MACD, EMA cross)
-- RANGING: Se priorizan señales de reversión (RSI extremos, BB bounce)
-- HIGH_VOL: Se amplían stops y se reduce tamaño de posición
+Stop loss y take profit basados en ATR con ratio 1:2.
 """
 
 import numpy as np
@@ -30,12 +18,11 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import (
-    RSI_PERIOD, RSI_OVERSOLD, RSI_OVERBOUGHT,
-    MACD_FAST, MACD_SLOW, MACD_SIGNAL,
-    BB_PERIOD, BB_STD,
     EMA_FAST, EMA_SLOW,
+    RSI_PERIOD, RSI_OVERSOLD, RSI_OVERBOUGHT,
+    ADX_PERIOD, ADX_MIN_TREND,
+    ATR_PERIOD, STOP_ATR_MULTIPLIER, TP_ATR_MULTIPLIER,
     REGIME_LOOKBACK, VOLATILITY_HIGH_THRESHOLD, TREND_ADX_THRESHOLD,
-    VOLUME_SPIKE_THRESHOLD, VOLUME_MA_PERIOD,
 )
 from bot.logger import setup_logger
 
@@ -43,13 +30,14 @@ logger = setup_logger("strategy")
 
 
 # ══════════════════════════════════════════════════════════════════
-# CÁLCULO DE INDICADORES TÉCNICOS (sin TA-Lib, implementación pura)
-# Decisión: Implementación propia para evitar dependencia de compilación
-# de TA-Lib que falla en muchos entornos. Misma lógica matemática.
+# INDICADORES TÉCNICOS
 # ══════════════════════════════════════════════════════════════════
 
+def compute_ema(series: pd.Series, period: int) -> pd.Series:
+    return series.ewm(span=period, adjust=False).mean()
+
+
 def compute_rsi(series: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
-    """RSI - Relative Strength Index."""
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
@@ -59,32 +47,7 @@ def compute_rsi(series: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def compute_macd(series: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """MACD - Moving Average Convergence Divergence. Retorna (macd, signal, histogram)."""
-    ema_fast = series.ewm(span=MACD_FAST, adjust=False).mean()
-    ema_slow = series.ewm(span=MACD_SLOW, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=MACD_SIGNAL, adjust=False).mean()
-    histogram = macd_line - signal_line
-    return macd_line, signal_line, histogram
-
-
-def compute_bollinger_bands(series: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Bollinger Bands. Retorna (upper, middle, lower)."""
-    middle = series.rolling(BB_PERIOD).mean()
-    std = series.rolling(BB_PERIOD).std()
-    upper = middle + BB_STD * std
-    lower = middle - BB_STD * std
-    return upper, middle, lower
-
-
-def compute_ema(series: pd.Series, period: int) -> pd.Series:
-    """Exponential Moving Average."""
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Average True Range - usado para stops dinámicos."""
+def compute_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close = (df["low"] - df["close"].shift()).abs()
@@ -92,8 +55,7 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return true_range.rolling(period).mean()
 
 
-def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Average Directional Index - fuerza de la tendencia."""
+def compute_adx(df: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
     plus_dm = df["high"].diff()
     minus_dm = -df["low"].diff()
     plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
@@ -109,101 +71,20 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
 
 # ══════════════════════════════════════════════════════════════════
-# DETECCIÓN DE PATRONES DE VELAS JAPONESAS
-# ══════════════════════════════════════════════════════════════════
-
-def detect_candle_patterns(df: pd.DataFrame) -> dict:
-    """
-    Detecta patrones de velas en las últimas 3 velas.
-
-    Retorna dict con nombre del patrón y señal (1=bullish, -1=bearish, 0=neutral).
-    """
-    if len(df) < 3:
-        return {"pattern": "none", "signal": 0}
-
-    c = df.iloc[-1]   # Vela actual
-    p = df.iloc[-2]   # Vela anterior
-    pp = df.iloc[-3]  # Dos velas atrás
-
-    body = abs(c["close"] - c["open"])
-    upper_shadow = c["high"] - max(c["close"], c["open"])
-    lower_shadow = min(c["close"], c["open"]) - c["low"]
-    total_range = c["high"] - c["low"]
-
-    if total_range == 0:
-        return {"pattern": "doji", "signal": 0}
-
-    # Doji: cuerpo muy pequeño
-    if body / total_range < 0.1:
-        return {"pattern": "doji", "signal": 0}
-
-    # Hammer (bullish): sombra inferior larga, cuerpo pequeño arriba
-    if lower_shadow > body * 2 and upper_shadow < body * 0.5:
-        if p["close"] < p["open"]:  # Tras vela bajista
-            return {"pattern": "hammer", "signal": 1}
-
-    # Shooting Star (bearish): sombra superior larga, cuerpo pequeño abajo
-    if upper_shadow > body * 2 and lower_shadow < body * 0.5:
-        if p["close"] > p["open"]:  # Tras vela alcista
-            return {"pattern": "shooting_star", "signal": -1}
-
-    # Bullish Engulfing
-    if (p["close"] < p["open"] and  # Vela anterior bajista
-            c["close"] > c["open"] and  # Vela actual alcista
-            c["open"] <= p["close"] and
-            c["close"] >= p["open"]):
-        return {"pattern": "bullish_engulfing", "signal": 1}
-
-    # Bearish Engulfing
-    if (p["close"] > p["open"] and  # Vela anterior alcista
-            c["close"] < c["open"] and  # Vela actual bajista
-            c["open"] >= p["close"] and
-            c["close"] <= p["open"]):
-        return {"pattern": "bearish_engulfing", "signal": -1}
-
-    # Morning Star (bullish reversal - 3 velas)
-    if (pp["close"] < pp["open"] and  # Primera bajista
-            abs(p["close"] - p["open"]) / (p["high"] - p["low"] + 1e-10) < 0.3 and  # Segunda: cuerpo pequeño
-            c["close"] > c["open"] and  # Tercera alcista
-            c["close"] > (pp["open"] + pp["close"]) / 2):
-        return {"pattern": "morning_star", "signal": 1}
-
-    # Evening Star (bearish reversal - 3 velas)
-    if (pp["close"] > pp["open"] and
-            abs(p["close"] - p["open"]) / (p["high"] - p["low"] + 1e-10) < 0.3 and
-            c["close"] < c["open"] and
-            c["close"] < (pp["open"] + pp["close"]) / 2):
-        return {"pattern": "evening_star", "signal": -1}
-
-    return {"pattern": "none", "signal": 0}
-
-
-# ══════════════════════════════════════════════════════════════════
 # DETECCIÓN DE RÉGIMEN DE MERCADO
 # ══════════════════════════════════════════════════════════════════
 
 def detect_market_regime(df: pd.DataFrame) -> str:
-    """
-    Clasifica el mercado en: TRENDING, RANGING, HIGH_VOLATILITY.
-
-    Lógica:
-    - ADX > 25 → TRENDING (hay tendencia fuerte)
-    - Volatilidad > 2% → HIGH_VOLATILITY (ajustar stops)
-    - Else → RANGING (operar reversiones)
-    """
     if len(df) < REGIME_LOOKBACK:
         return "UNKNOWN"
 
     recent = df.tail(REGIME_LOOKBACK)
-
-    # Volatilidad: desviación estándar de retornos
     returns = recent["close"].pct_change().dropna()
     volatility = returns.std() * np.sqrt(len(returns))
 
     if volatility > VOLATILITY_HIGH_THRESHOLD:
         return "HIGH_VOLATILITY"
 
-    # ADX para detectar tendencia
     adx = compute_adx(recent)
     if not adx.empty and adx.iloc[-1] > TREND_ADX_THRESHOLD:
         return "TRENDING"
@@ -212,81 +93,40 @@ def detect_market_regime(df: pd.DataFrame) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
-# MOTOR DE ESTRATEGIA PRINCIPAL
+# MOTOR DE ESTRATEGIA
 # ══════════════════════════════════════════════════════════════════
 
 class StrategyEngine:
-    """
-    Motor de señales multi-indicador con confluencia.
-
-    Genera señales de trading basadas en la confluencia de múltiples
-    indicadores técnicos, patrones de velas y análisis de volumen.
-
-    Cada señal tiene un score de confianza (0-1) basado en cuántos
-    indicadores confirman la dirección.
-    """
-
     def __init__(self, ml_weight: float = 0.0):
-        """
-        ml_weight: peso de la predicción del modelo ML en la decisión final.
-        Empieza en 0 (sin ML) y se incrementa conforme el modelo mejora.
-        """
         self.ml_weight = ml_weight
         self.last_signal = None
         self.last_indicators = {}
+        self.prev_ema_fast = None
+        self.prev_ema_slow = None
         logger.info(f"StrategyEngine inicializado | ML weight: {ml_weight}")
 
     def compute_all_indicators(self, df: pd.DataFrame) -> dict:
-        """Calcula todos los indicadores técnicos sobre el DataFrame de velas."""
         close = df["close"]
 
-        # RSI
-        rsi = compute_rsi(close)
-        rsi_value = rsi.iloc[-1] if not rsi.empty else 50
-
-        # MACD
-        macd_line, signal_line, histogram = compute_macd(close)
-        macd_val = macd_line.iloc[-1] if not macd_line.empty else 0
-        signal_val = signal_line.iloc[-1] if not signal_line.empty else 0
-        hist_val = histogram.iloc[-1] if not histogram.empty else 0
-
-        # Bollinger Bands
-        bb_upper, bb_middle, bb_lower = compute_bollinger_bands(close)
-        price = close.iloc[-1]
-        bb_position = 0
-        if not bb_upper.empty and not bb_lower.empty:
-            bb_range = bb_upper.iloc[-1] - bb_lower.iloc[-1]
-            if bb_range > 0:
-                bb_position = (price - bb_lower.iloc[-1]) / bb_range
-
-        # EMAs
         ema_fast = compute_ema(close, EMA_FAST)
         ema_slow = compute_ema(close, EMA_SLOW)
-        ema_fast_val = ema_fast.iloc[-1] if not ema_fast.empty else price
-        ema_slow_val = ema_slow.iloc[-1] if not ema_slow.empty else price
-
-        # ATR (para stops dinámicos)
+        rsi = compute_rsi(close)
         atr = compute_atr(df)
-        atr_val = atr.iloc[-1] if not atr.empty else 0
-
-        # Volumen relativo
-        vol_ma = df["volume"].rolling(VOLUME_MA_PERIOD).mean()
-        vol_ratio = df["volume"].iloc[-1] / vol_ma.iloc[-1] if not vol_ma.empty and vol_ma.iloc[-1] > 0 else 1.0
+        adx = compute_adx(df)
 
         indicators = {
-            "rsi": round(rsi_value, 2),
-            "macd": round(macd_val, 4),
-            "macd_signal": round(signal_val, 4),
-            "macd_histogram": round(hist_val, 4),
-            "bb_upper": round(bb_upper.iloc[-1], 2) if not bb_upper.empty else 0,
-            "bb_middle": round(bb_middle.iloc[-1], 2) if not bb_middle.empty else 0,
-            "bb_lower": round(bb_lower.iloc[-1], 2) if not bb_lower.empty else 0,
-            "bb_position": round(bb_position, 4),
-            "ema_fast": round(ema_fast_val, 2),
-            "ema_slow": round(ema_slow_val, 2),
-            "atr": round(atr_val, 2),
-            "volume_ratio": round(vol_ratio, 2),
-            "price": round(price, 2),
+            "ema_fast": round(ema_fast.iloc[-1], 2),
+            "ema_slow": round(ema_slow.iloc[-1], 2),
+            "ema_fast_prev": round(ema_fast.iloc[-2], 2) if len(ema_fast) > 1 else 0,
+            "ema_slow_prev": round(ema_slow.iloc[-2], 2) if len(ema_slow) > 1 else 0,
+            "rsi": round(rsi.iloc[-1], 2) if not rsi.empty else 50,
+            "atr": round(atr.iloc[-1], 2) if not atr.empty else 0,
+            "adx": round(adx.iloc[-1], 2) if not adx.empty else 0,
+            "price": round(close.iloc[-1], 2),
+            # Legacy fields for ML module compatibility
+            "macd_histogram": 0,
+            "bb_position": 0.5,
+            "volume_ratio": 1.0,
         }
         self.last_indicators = indicators
         return indicators
@@ -294,169 +134,133 @@ class StrategyEngine:
     def generate_signal(self, df: pd.DataFrame, order_book: dict = None,
                         ml_prediction: float = 0.0, sentiment: float = 0.5) -> dict:
         """
-        Genera señal de trading basada en confluencia de indicadores.
+        Genera señal basada en EMA cross + ADX filter + RSI safety.
 
-        Retorna:
-        {
-            "action": "BUY" | "SELL" | "HOLD",
-            "confidence": float (0-1),
-            "reasons": list[str],
-            "indicators": dict,
-            "regime": str,
-            "candle_pattern": dict,
-        }
+        Reglas simples:
+        1. ADX > 20 → hay tendencia → podemos operar
+        2. EMA 9 cruza por encima de EMA 21 → BUY
+        3. EMA 9 cruza por debajo de EMA 21 → SELL
+        4. RSI < 30 → no SHORT (probable rebote)
+        5. RSI > 70 → no LONG (probable caída)
         """
-        if len(df) < max(BB_PERIOD, MACD_SLOW, REGIME_LOOKBACK) + 10:
+        min_data = max(EMA_SLOW, ADX_PERIOD, RSI_PERIOD) + 10
+        if len(df) < min_data:
             return {"action": "HOLD", "confidence": 0, "reasons": ["Datos insuficientes"],
                     "indicators": {}, "regime": "UNKNOWN", "candle_pattern": {}}
 
         indicators = self.compute_all_indicators(df)
         regime = detect_market_regime(df)
-        candle = detect_candle_patterns(df)
 
-        buy_signals = []
-        sell_signals = []
         reasons = []
+        action = "HOLD"
+        confidence = 0.0
 
-        # ── 1. RSI ─────────────────────────────────────────────
-        if indicators["rsi"] < RSI_OVERSOLD:
-            buy_signals.append(("RSI", 0.25))
-            reasons.append(f"RSI sobreventa ({indicators['rsi']})")
-        elif indicators["rsi"] > RSI_OVERBOUGHT:
-            sell_signals.append(("RSI", 0.25))
-            reasons.append(f"RSI sobrecompra ({indicators['rsi']})")
+        adx = indicators["adx"]
+        rsi = indicators["rsi"]
+        ema_f = indicators["ema_fast"]
+        ema_s = indicators["ema_slow"]
+        ema_f_prev = indicators["ema_fast_prev"]
+        ema_s_prev = indicators["ema_slow_prev"]
 
-        # ── 2. MACD Crossover ──────────────────────────────────
-        if indicators["macd"] > indicators["macd_signal"] and indicators["macd_histogram"] > 0:
-            buy_signals.append(("MACD", 0.25))
-            reasons.append("MACD cruce alcista")
-        elif indicators["macd"] < indicators["macd_signal"] and indicators["macd_histogram"] < 0:
-            sell_signals.append(("MACD", 0.25))
-            reasons.append("MACD cruce bajista")
+        # ── 1. Filtro de tendencia: ADX debe confirmar ────────
+        if adx < ADX_MIN_TREND:
+            reasons.append(f"Sin tendencia (ADX={adx:.0f} < {ADX_MIN_TREND})")
+            return self._build_signal("HOLD", 0, reasons, indicators, regime)
 
-        # ── 3. Bollinger Bands ─────────────────────────────────
-        if indicators["bb_position"] < 0.15:  # Precio cerca de banda inferior
-            buy_signals.append(("BB", 0.20))
-            reasons.append("Precio en banda inferior BB")
-        elif indicators["bb_position"] > 0.85:  # Precio cerca de banda superior
-            sell_signals.append(("BB", 0.20))
-            reasons.append("Precio en banda superior BB")
+        reasons.append(f"Tendencia confirmada (ADX={adx:.0f})")
 
-        # ── 4. EMA Cross ───────────────────────────────────────
-        if indicators["ema_fast"] > indicators["ema_slow"]:
-            buy_signals.append(("EMA", 0.15))
-            reasons.append("EMA rápida > EMA lenta")
-        elif indicators["ema_fast"] < indicators["ema_slow"]:
-            sell_signals.append(("EMA", 0.15))
-            reasons.append("EMA rápida < EMA lenta")
+        # ── 2. EMA Cross: detectar cruce ──────────────────────
+        ema_cross_up = ema_f_prev <= ema_s_prev and ema_f > ema_s
+        ema_cross_down = ema_f_prev >= ema_s_prev and ema_f < ema_s
+        ema_above = ema_f > ema_s
+        ema_below = ema_f < ema_s
 
-        # ── 5. Patrones de Velas ───────────────────────────────
-        if candle["signal"] == 1:
-            buy_signals.append(("CANDLE", 0.10))
-            reasons.append(f"Patrón alcista: {candle['pattern']}")
-        elif candle["signal"] == -1:
-            sell_signals.append(("CANDLE", 0.10))
-            reasons.append(f"Patrón bajista: {candle['pattern']}")
+        if ema_cross_up:
+            action = "BUY"
+            confidence = 0.70
+            reasons.append("EMA 9 cruza ENCIMA de EMA 21 (cruce alcista)")
+        elif ema_cross_down:
+            action = "SELL"
+            confidence = 0.70
+            reasons.append("EMA 9 cruza DEBAJO de EMA 21 (cruce bajista)")
+        elif ema_above:
+            # No hay cruce nuevo pero EMA sigue alcista → señal más débil
+            action = "BUY"
+            confidence = 0.40
+            reasons.append("EMA 9 > EMA 21 (tendencia alcista activa)")
+        elif ema_below:
+            action = "SELL"
+            confidence = 0.40
+            reasons.append("EMA 9 < EMA 21 (tendencia bajista activa)")
 
-        # ── 6. Volumen ─────────────────────────────────────────
-        if indicators["volume_ratio"] > VOLUME_SPIKE_THRESHOLD:
-            reasons.append(f"Spike volumen ({indicators['volume_ratio']:.1f}x)")
-            # El volumen confirma la señal existente, no genera por sí solo
+        # ── 3. Filtro RSI: no operar contra extremos ──────────
+        if action == "BUY" and rsi > RSI_OVERBOUGHT:
+            reasons.append(f"LONG bloqueado: RSI sobrecompra ({rsi:.0f})")
+            return self._build_signal("HOLD", 0, reasons, indicators, regime)
 
-        # ── 7. Order Book Imbalance ────────────────────────────
-        if order_book and order_book.get("imbalance", 1.0) > 1.5:
-            buy_signals.append(("OB", 0.05))
-            reasons.append(f"Order book bullish (imb={order_book['imbalance']:.2f})")
-        elif order_book and order_book.get("imbalance", 1.0) < 0.67:
-            sell_signals.append(("OB", 0.05))
-            reasons.append(f"Order book bearish (imb={order_book['imbalance']:.2f})")
+        if action == "SELL" and rsi < RSI_OVERSOLD:
+            reasons.append(f"SHORT bloqueado: RSI sobreventa ({rsi:.0f})")
+            return self._build_signal("HOLD", 0, reasons, indicators, regime)
 
-        # ── Calcular score de confluencia ──────────────────────
-        buy_score = sum(weight for _, weight in buy_signals)
-        sell_score = sum(weight for _, weight in sell_signals)
+        # RSI en zona favorable → boost de confianza
+        if action == "BUY" and rsi < 50:
+            confidence += 0.10
+            reasons.append(f"RSI favorable para LONG ({rsi:.0f})")
+        elif action == "SELL" and rsi > 50:
+            confidence += 0.10
+            reasons.append(f"RSI favorable para SHORT ({rsi:.0f})")
 
-        # Ajustar según régimen
-        if regime == "TRENDING":
-            # En tendencia, dar más peso a MACD y EMA
-            for name, weight in buy_signals:
-                if name in ("MACD", "EMA"):
-                    buy_score += weight * 0.2
-            for name, weight in sell_signals:
-                if name in ("MACD", "EMA"):
-                    sell_score += weight * 0.2
-        elif regime == "RANGING":
-            # En rango, dar más peso a RSI y BB
-            for name, weight in buy_signals:
-                if name in ("RSI", "BB"):
-                    buy_score += weight * 0.2
-            for name, weight in sell_signals:
-                if name in ("RSI", "BB"):
-                    sell_score += weight * 0.2
+        # ── 4. Régimen: no operar en alta volatilidad ─────────
+        if regime == "HIGH_VOLATILITY":
+            confidence *= 0.7
+            reasons.append("Alta volatilidad: confianza reducida")
 
-        # ── Incorporar ML y sentimiento ────────────────────────
+        # ── 5. ML (si está entrenado) ─────────────────────────
         if self.ml_weight > 0:
-            if ml_prediction > 0.5:
-                buy_score += self.ml_weight * (ml_prediction - 0.5) * 2
-            elif ml_prediction < 0.5:
-                sell_score += self.ml_weight * (0.5 - ml_prediction) * 2
+            if action == "BUY" and ml_prediction > 0.6:
+                confidence += self.ml_weight * 0.5
+            elif action == "SELL" and ml_prediction < 0.4:
+                confidence += self.ml_weight * 0.5
 
+        # ── 6. Sentimiento (muy bajo peso) ────────────────────
         from config import SENTIMENT_WEIGHT, ENABLE_SENTIMENT
         if ENABLE_SENTIMENT:
-            # sentiment: 0=extreme fear, 100=extreme greed
-            if sentiment < 25:  # Fear = oportunidad de compra contrarian
-                buy_score += SENTIMENT_WEIGHT
-            elif sentiment > 75:  # Greed = oportunidad de venta
-                sell_score += SENTIMENT_WEIGHT
+            if sentiment < 25 and action == "BUY":
+                confidence += SENTIMENT_WEIGHT
+            elif sentiment > 75 and action == "SELL":
+                confidence += SENTIMENT_WEIGHT
 
-        # ── Decisión final ─────────────────────────────────────
-        min_confidence = 0.25  # Mínimo 25% de confluencia para operar (más trades)
+        confidence = min(confidence, 1.0)
 
-        if buy_score > sell_score and buy_score >= min_confidence:
-            action = "BUY"
-            confidence = min(buy_score, 1.0)
-        elif sell_score > buy_score and sell_score >= min_confidence:
-            action = "SELL"
-            confidence = min(sell_score, 1.0)
-        else:
+        # Mínimo 35% de confianza para operar
+        if confidence < 0.35:
+            reasons.append(f"Confianza insuficiente ({confidence:.0%})")
             action = "HOLD"
             confidence = 0.0
-            reasons.append("Confluencia insuficiente")
 
-        # Volumen confirma la señal (boost confidence)
-        if action != "HOLD" and indicators["volume_ratio"] > VOLUME_SPIKE_THRESHOLD:
-            confidence = min(confidence * 1.15, 1.0)
+        return self._build_signal(action, confidence, reasons, indicators, regime)
 
+    def _build_signal(self, action, confidence, reasons, indicators, regime):
         signal = {
             "action": action,
             "confidence": round(confidence, 4),
             "reasons": reasons,
             "indicators": indicators,
             "regime": regime,
-            "candle_pattern": candle,
+            "candle_pattern": {"pattern": "none", "signal": 0},
         }
-
         self.last_signal = signal
         logger.info(
             f"SIGNAL: {action} | conf={confidence:.2%} | regime={regime} | "
+            f"ADX={indicators.get('adx', 0):.0f} | RSI={indicators.get('rsi', 50):.0f} | "
             f"reasons={', '.join(reasons[:3])}"
         )
         return signal
 
     def compute_dynamic_stop_loss(self, entry_price: float, direction: str,
                                    atr: float, regime: str) -> float:
-        """
-        Calcula stop-loss dinámico basado en ATR y régimen.
-
-        En alta volatilidad se amplía el stop para evitar que
-        el ruido normal del mercado lo active prematuramente.
-        """
-        multiplier = 1.5
-        if regime == "HIGH_VOLATILITY":
-            multiplier = 2.5  # Más holgura en alta vol
-        elif regime == "TRENDING":
-            multiplier = 2.0  # Moderado en tendencia
-
-        stop_distance = atr * multiplier
+        """Stop loss basado en ATR. Ratio 1:2 con take profit."""
+        stop_distance = atr * STOP_ATR_MULTIPLIER
 
         if direction == "BUY":
             return entry_price - stop_distance
@@ -465,8 +269,9 @@ class StrategyEngine:
 
     def compute_take_profit(self, entry_price: float, direction: str,
                              atr: float) -> float:
-        """Take profit principal basado en ATR (ratio riesgo:beneficio 1:2)."""
-        tp_distance = atr * 3.0  # 3x ATR
+        """Take profit = 2x el stop loss distance (ratio 1:2)."""
+        tp_distance = atr * TP_ATR_MULTIPLIER
+
         if direction == "BUY":
             return entry_price + tp_distance
         else:

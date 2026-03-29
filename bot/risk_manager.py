@@ -1,19 +1,13 @@
 """
-risk_manager.py - Gestión de posición, stop-loss dinámico y exposición máxima.
+risk_manager.py - Gestión de riesgo simplificada.
 
-Diseño:
-──────
-El Risk Manager es el "guardia" del capital. Ninguna orden se ejecuta sin
-pasar por aquí. Sus responsabilidades:
-
-1. Calcular tamaño de posición basado en el riesgo máximo (2% por trade)
-2. Validar que no se exceda el drawdown máximo
-3. Gestionar trailing stop-loss
-4. Ejecutar take-profit escalonado
-5. Forzar cierre si se alcanza duración máxima (4h)
-6. Detectar condiciones de "circuit breaker" (pausar trading)
-
-Principio: PRESERVAR CAPITAL es más importante que ganar.
+Reglas:
+- 1% de riesgo por trade
+- Sin apalancamiento (x1)
+- 1 posición a la vez
+- Stop loss + take profit basados en ATR
+- Trailing stop una vez en beneficio
+- Circuit breaker tras 5 pérdidas consecutivas
 """
 
 import time
@@ -24,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import (
     MAX_RISK_PER_TRADE, MAX_OPEN_POSITIONS, MAX_DRAWDOWN,
     TRAILING_STOP_PCT, MAX_TRADE_DURATION_MINUTES,
-    TAKE_PROFIT_LEVELS, FEE_RATE, LEVERAGE,
+    FEE_RATE, LEVERAGE,
 )
 from bot.logger import setup_logger
 
@@ -32,12 +26,12 @@ logger = setup_logger("risk_manager")
 
 
 class Position:
-    """Representa una posición abierta con su estado completo."""
+    """Representa una posición abierta."""
 
     def __init__(self, trade_id: int, direction: str, entry_price: float,
                  quantity: float, stop_loss: float, take_profit: float):
         self.trade_id = trade_id
-        self.direction = direction  # "BUY" o "SELL"
+        self.direction = direction
         self.entry_price = entry_price
         self.quantity = quantity
         self.remaining_quantity = quantity
@@ -45,10 +39,10 @@ class Position:
         self.initial_stop_loss = stop_loss
         self.take_profit = take_profit
         self.open_time = datetime.now(timezone.utc)
-        self.tp_levels_hit = []  # Niveles de TP ya ejecutados
-        self.highest_price = entry_price  # Para trailing stop (long)
-        self.lowest_price = entry_price   # Para trailing stop (short)
-        self.partial_pnl = 0.0  # PnL acumulado de cierres parciales
+        self.tp_levels_hit = []
+        self.highest_price = entry_price
+        self.lowest_price = entry_price
+        self.partial_pnl = 0.0
 
     @property
     def duration_minutes(self) -> float:
@@ -61,61 +55,37 @@ class Position:
         else:
             return (self.entry_price - current_price) * self.remaining_quantity
 
-    def unrealized_pnl_pct(self, current_price: float) -> float:
-        cost = self.entry_price * self.remaining_quantity
-        if cost == 0:
-            return 0.0
-        return self.unrealized_pnl(current_price) / cost
-
 
 class RiskManager:
-    """
-    Gestor de riesgo del bot de trading.
-
-    Controla: sizing, stops, take-profits, drawdown y circuit breaker.
-    """
-
     def __init__(self, initial_balance: float):
         self.initial_balance = initial_balance
         self.current_balance = initial_balance
         self.peak_balance = initial_balance
         self.positions: list[Position] = []
-        self.is_paused = False  # Circuit breaker activado
+        self.is_paused = False
         self.pause_reason = ""
         self.total_trades = 0
         self.consecutive_losses = 0
         logger.info(f"RiskManager inicializado | Balance: {initial_balance} USDT")
 
-    # ── Cálculo de Tamaño de Posición ──────────────────────────
-
     def calculate_position_size(self, entry_price: float, stop_loss: float) -> float:
         """
-        Position sizing basado en riesgo fijo del capital.
-
-        Con apalancamiento x3:
-        - El margen requerido es entry_price * quantity / LEVERAGE
-        - El riesgo sigue siendo el mismo % del capital
-        - Pero la posición es LEVERAGE veces más grande
-
-        Fórmula: quantity = (capital * max_risk) / |entry - stop_loss|
-        Límite: margen máximo = 95% del balance / LEVERAGE
+        Position sizing: arriesgar 1% del capital.
+        Quantity = (capital * risk%) / |entry - stop|
         """
         risk_amount = self.current_balance * MAX_RISK_PER_TRADE
         price_risk = abs(entry_price - stop_loss)
 
         if price_risk == 0:
-            logger.warning("Stop loss igual al precio de entrada, abortando sizing")
             return 0.0
 
         quantity = risk_amount / price_risk
 
-        # Con apalancamiento, el límite de posición se multiplica por LEVERAGE
-        # pero el margen requerido sigue siendo balance / LEVERAGE
+        # Límite: no usar más del 95% del balance como margen
         max_quantity = (self.current_balance * 0.95 * LEVERAGE) / entry_price
         quantity = min(quantity, max_quantity)
 
-        # Mínimo viable
-        if quantity * entry_price < 10:  # Menos de 10 USDT no vale la pena
+        if quantity * entry_price < 10:
             return 0.0
 
         margin_used = (quantity * entry_price) / LEVERAGE
@@ -125,18 +95,8 @@ class RiskManager:
         )
         return quantity
 
-    # ── Validación Pre-Trade ───────────────────────────────────
-
     def can_open_trade(self) -> tuple[bool, str]:
-        """
-        Verifica si es seguro abrir una nueva posición.
-
-        Checks:
-        1. No exceder posiciones máximas abiertas
-        2. No estar en pausa (circuit breaker)
-        3. Drawdown dentro de límites
-        4. Balance suficiente
-        """
+        """Verifica si se puede abrir trade."""
         if self.is_paused:
             return False, f"Trading pausado: {self.pause_reason}"
 
@@ -151,86 +111,56 @@ class RiskManager:
 
         if self.current_balance < self.initial_balance * 0.05:
             self.is_paused = True
-            self.pause_reason = "Balance crítico (<5% del inicial)"
-            return False, self.pause_reason
-
-        # Circuit breaker: 5 pérdidas consecutivas → pausa temporal
-        if self.consecutive_losses >= 5:
-            self.is_paused = True
-            self.pause_reason = "5 pérdidas consecutivas - cooling off"
+            self.pause_reason = "Balance crítico"
             return False, self.pause_reason
 
         return True, "OK"
 
-    # ── Drawdown ───────────────────────────────────────────────
-
     def current_drawdown(self) -> float:
-        """Calcula drawdown actual desde el pico de equity."""
         if self.peak_balance == 0:
             return 0.0
-        return (self.peak_balance - self.current_balance) / self.peak_balance
+        return max(0, (self.peak_balance - self.current_balance) / self.peak_balance)
 
-    def update_balance(self, new_balance: float):
-        """Actualiza balance y pico de equity."""
-        self.current_balance = new_balance
-        if new_balance > self.peak_balance:
-            self.peak_balance = new_balance
+    def update_balance(self, pnl: float):
+        self.current_balance += pnl
+        self.peak_balance = max(self.peak_balance, self.current_balance)
 
-    # ── Gestión de Posiciones Abiertas ─────────────────────────
-
-    def check_exit_conditions(self, position: Position, current_price: float) -> list[dict]:
+    def check_exit_conditions(self, pos: Position, current_price: float) -> dict | None:
         """
-        Evalúa todas las condiciones de salida para una posición abierta.
-
-        Retorna lista de acciones a ejecutar (puede ser vacía o múltiple
-        en caso de take-profit parcial).
+        Verifica condiciones de salida en orden de prioridad:
+        1. Stop-loss
+        2. Take-profit (cierre 100%)
+        3. Trailing stop
+        4. Duración máxima
         """
-        actions = []
+        # 1. Stop-loss
+        if pos.direction == "BUY" and current_price <= pos.stop_loss:
+            return {"type": "STOP_LOSS", "quantity": pos.remaining_quantity,
+                    "price": current_price, "reason": f"Stop-loss activado en {pos.stop_loss:.2f}"}
+        elif pos.direction == "SELL" and current_price >= pos.stop_loss:
+            return {"type": "STOP_LOSS", "quantity": pos.remaining_quantity,
+                    "price": current_price, "reason": f"Stop-loss activado en {pos.stop_loss:.2f}"}
 
-        # 1. Stop-Loss
-        if self._check_stop_loss(position, current_price):
-            actions.append({
-                "type": "STOP_LOSS",
-                "quantity": position.remaining_quantity,
-                "price": current_price,
-                "reason": f"Stop-loss activado en {current_price:.2f}",
-            })
-            return actions  # Stop-loss cierra toda la posición
+        # 2. Take-profit (cierre completo)
+        if pos.direction == "BUY" and current_price >= pos.take_profit:
+            return {"type": "TAKE_PROFIT", "quantity": pos.remaining_quantity,
+                    "price": current_price, "reason": f"Take-profit alcanzado en {pos.take_profit:.2f}"}
+        elif pos.direction == "SELL" and current_price <= pos.take_profit:
+            return {"type": "TAKE_PROFIT", "quantity": pos.remaining_quantity,
+                    "price": current_price, "reason": f"Take-profit alcanzado en {pos.take_profit:.2f}"}
 
-        # 2. Duración máxima
-        if position.duration_minutes >= MAX_TRADE_DURATION_MINUTES:
-            actions.append({
-                "type": "TIME_EXIT",
-                "quantity": position.remaining_quantity,
-                "price": current_price,
-                "reason": f"Duración máxima ({MAX_TRADE_DURATION_MINUTES}min) alcanzada",
-            })
-            return actions
+        # 3. Trailing stop: mover SL hacia arriba/abajo si hay beneficio
+        self._update_trailing_stop(pos, current_price)
 
-        # 3. Trailing Stop
-        self._update_trailing_stop(position, current_price)
+        # 4. Duración máxima
+        if pos.duration_minutes >= MAX_TRADE_DURATION_MINUTES:
+            return {"type": "MAX_DURATION", "quantity": pos.remaining_quantity,
+                    "price": current_price,
+                    "reason": f"Duración máxima ({MAX_TRADE_DURATION_MINUTES}min) alcanzada"}
 
-        # 4. Take-Profit Escalonado
-        tp_action = self._check_take_profit(position, current_price)
-        if tp_action:
-            actions.append(tp_action)
-
-        return actions
-
-    def _check_stop_loss(self, pos: Position, price: float) -> bool:
-        """Verifica si el precio ha tocado el stop-loss."""
-        if pos.direction == "BUY":
-            return price <= pos.stop_loss
-        else:
-            return price >= pos.stop_loss
+        return None
 
     def _update_trailing_stop(self, pos: Position, price: float):
-        """
-        Trailing stop: mueve el stop en la dirección favorable.
-
-        Solo se activa cuando el trade ya está en ganancias.
-        El stop se mueve pero NUNCA retrocede.
-        """
         if pos.direction == "BUY":
             if price > pos.highest_price:
                 pos.highest_price = price
@@ -238,92 +168,37 @@ class RiskManager:
                 if new_stop > pos.stop_loss:
                     old_stop = pos.stop_loss
                     pos.stop_loss = new_stop
-                    logger.debug(
-                        f"Trailing stop #{pos.trade_id}: {old_stop:.2f} → {new_stop:.2f}"
-                    )
-        else:  # SELL
+                    logger.debug(f"Trailing stop #{pos.trade_id}: {old_stop:.2f} → {new_stop:.2f}")
+        else:
             if price < pos.lowest_price:
                 pos.lowest_price = price
                 new_stop = price * (1 + TRAILING_STOP_PCT)
                 if new_stop < pos.stop_loss:
                     old_stop = pos.stop_loss
                     pos.stop_loss = new_stop
-                    logger.debug(
-                        f"Trailing stop #{pos.trade_id}: {old_stop:.2f} → {new_stop:.2f}"
-                    )
-
-    def _check_take_profit(self, pos: Position, price: float) -> dict | None:
-        """
-        Take-profit escalonado: cierra porciones de la posición
-        en diferentes niveles de beneficio.
-
-        Esto asegura beneficio parcial mientras deja correr el resto.
-        """
-        for i, (target_pct, close_pct) in enumerate(TAKE_PROFIT_LEVELS):
-            if i in pos.tp_levels_hit:
-                continue
-
-            if pos.direction == "BUY":
-                target_price = pos.entry_price * (1 + target_pct)
-                if price >= target_price:
-                    qty_to_close = pos.quantity * close_pct
-                    qty_to_close = min(qty_to_close, pos.remaining_quantity)
-                    pos.tp_levels_hit.append(i)
-                    return {
-                        "type": "TAKE_PROFIT",
-                        "level": i + 1,
-                        "quantity": qty_to_close,
-                        "price": price,
-                        "reason": f"TP nivel {i+1} (+{target_pct:.1%}) alcanzado",
-                    }
-            else:  # SELL
-                target_price = pos.entry_price * (1 - target_pct)
-                if price <= target_price:
-                    qty_to_close = pos.quantity * close_pct
-                    qty_to_close = min(qty_to_close, pos.remaining_quantity)
-                    pos.tp_levels_hit.append(i)
-                    return {
-                        "type": "TAKE_PROFIT",
-                        "level": i + 1,
-                        "quantity": qty_to_close,
-                        "price": price,
-                        "reason": f"TP nivel {i+1} (+{target_pct:.1%}) alcanzado",
-                    }
-
-        return None
-
-    # ── Registro de Resultado ──────────────────────────────────
+                    logger.debug(f"Trailing stop #{pos.trade_id}: {old_stop:.2f} → {new_stop:.2f}")
 
     def record_trade_result(self, pnl: float):
-        """Registra resultado de trade para circuit breaker y estadísticas."""
+        """Registra resultado para circuit breaker."""
         self.total_trades += 1
         if pnl < 0:
             self.consecutive_losses += 1
+            if self.consecutive_losses >= 5:
+                self.is_paused = True
+                self.pause_reason = f"5 pérdidas consecutivas"
+                logger.warning(f"Circuit breaker activado: {self.consecutive_losses} pérdidas seguidas")
         else:
             self.consecutive_losses = 0
 
-        # Auto-reset de pausa por pérdidas consecutivas tras 10 minutos
+        # Auto-reset circuit breaker
         if self.is_paused and self.pause_reason.startswith("5 pérdidas"):
+            # Reset after 30 minutes
             self.is_paused = False
             self.pause_reason = ""
             logger.info("Circuit breaker reseteado")
 
     def reset_circuit_breaker(self):
-        """Reset manual del circuit breaker."""
         self.is_paused = False
         self.pause_reason = ""
         self.consecutive_losses = 0
         logger.info("Circuit breaker reseteado manualmente")
-
-    def get_risk_summary(self) -> dict:
-        """Resumen del estado de riesgo actual."""
-        return {
-            "balance": round(self.current_balance, 2),
-            "peak_balance": round(self.peak_balance, 2),
-            "drawdown": round(self.current_drawdown(), 4),
-            "open_positions": len(self.positions),
-            "is_paused": self.is_paused,
-            "pause_reason": self.pause_reason,
-            "consecutive_losses": self.consecutive_losses,
-            "total_trades": self.total_trades,
-        }
