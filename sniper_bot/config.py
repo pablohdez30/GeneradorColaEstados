@@ -26,7 +26,7 @@ VOLUME_SPIKE_THRESHOLD = 2.0  # Volumen 2x por encima de la media
 
 # ─── Scoring ─────────────────────────────────────────────────────
 # Cada condición cumplida suma puntos. Mínimo 3 para alertar.
-MIN_SCORE_TO_ALERT = 3
+MIN_SCORE_TO_ALERT = 4  # Mínimo 4 para mayor selectividad
 SCORES = {
     "adx_strong": 1,          # ADX > 30
     "ema_cross_recent": 2,    # Cruce EMA en últimas 3 velas (vale doble)
@@ -66,7 +66,7 @@ FEAR_THRESHOLD = 25          # < 25 = miedo extremo (bueno para longs)
 GREED_THRESHOLD = 75         # > 75 = avaricia extrema (bueno para shorts)
 
 # ─── Loop ────────────────────────────────────────────────────────
-CHECK_INTERVAL_SECONDS = 60  # Analizar cada 60 segundos
+CHECK_INTERVAL_SECONDS = 300  # Analizar cada 5 minutos (no necesita más)
 
 # ─── Base de Datos ───────────────────────────────────────────────
 DB_PATH = "sniper_bot/data/sniper.db"

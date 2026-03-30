@@ -24,6 +24,7 @@ class SignalScorer:
     def __init__(self):
         self.last_fear_greed = 50  # Neutral por defecto
         self.last_fg_fetch = 0
+        self.last_signal_direction = None  # Evitar repetir misma señal
 
     def get_fear_greed(self) -> int:
         """Obtiene Fear & Greed Index. Cachea por 15 minutos."""
@@ -64,6 +65,11 @@ class SignalScorer:
         if not primary:
             return None
 
+        # Sin tendencia mínima, no hay señal posible
+        adx = primary.get("adx", 0)
+        if adx < 20:
+            return None  # No hay tendencia, no alertar
+
         # Evaluar dirección
         buy_score = 0
         sell_score = 0
@@ -71,7 +77,6 @@ class SignalScorer:
         sell_reasons = []
 
         # ── 1. ADX: tendencia fuerte ──────────────────────────
-        adx = primary.get("adx", 0)
         if adx >= ADX_STRONG_TREND:
             # ADX solo confirma fuerza, no dirección
             buy_score += SCORES["adx_strong"]
@@ -149,8 +154,14 @@ class SignalScorer:
 
         # ── Decisión final (solo LONG - usuario opera en Spot) ──
         if buy_score >= MIN_SCORE_TO_ALERT and buy_score > sell_score:
+            # No repetir la misma señal consecutivamente
+            if self.last_signal_direction == "LONG":
+                return None
+            self.last_signal_direction = "LONG"
             return self._build_signal("LONG", buy_score, buy_reasons, primary, fg)
 
+        # Reset si no hay señal (permite alertar cuando vuelva a haber)
+        self.last_signal_direction = None
         return None
 
     def _build_signal(self, direction: str, score: int, reasons: list,

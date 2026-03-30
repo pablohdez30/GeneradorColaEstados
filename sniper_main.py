@@ -49,8 +49,8 @@ def main():
     ║  Modo:        Solo ALERTAS (no ejecuta trades)              ║
     ║  Par:         BTC/USDT Perpetual                            ║
     ║  Timeframes:  15m, 1h, 4h (multi-timeframe)                ║
-    ║  Mín. score:  3/7 para alertar                              ║
-    ║  Cooldown:    1 hora entre alertas                          ║
+    ║  Mín. score:  4/7 para alertar                              ║
+    ║  Cooldown:    4 horas entre alertas                          ║
     ║  Notifica:    Telegram + consola                            ║
     ╠══════════════════════════════════════════════════════════════╣
     ║  Condiciones evaluadas:                                     ║
