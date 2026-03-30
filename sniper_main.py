@@ -50,7 +50,7 @@ def main():
     ║  Par:         BTC/USDT Perpetual                            ║
     ║  Timeframes:  15m, 1h, 4h (multi-timeframe)                ║
     ║  Mín. score:  4/7 para alertar                              ║
-    ║  Cooldown:    4 horas entre alertas                          ║
+    ║  Cooldown:    1 hora entre alertas                           ║
     ║  Notifica:    Telegram + consola                            ║
     ╠══════════════════════════════════════════════════════════════╣
     ║  Condiciones evaluadas:                                     ║
