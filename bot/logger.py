@@ -184,3 +184,17 @@ class TradeLogger:
                 "SELECT COUNT(*) FROM trades WHERE status='CLOSED'"
             ).fetchone()
             return row[0]
+
+
+# DB separada para el bot Trend Following
+DB_PATH_TREND = "bot/data/trading_bot_trend.db"
+
+
+class TradeLoggerTrend(TradeLogger):
+    """TradeLogger con base de datos separada para el bot Trend."""
+
+    def __init__(self):
+        self.db_path = DB_PATH_TREND
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+        self.logger = setup_logger("trade_logger_trend")

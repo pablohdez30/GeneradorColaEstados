@@ -122,7 +122,7 @@ def run_dashboard():
         layout="wide",
     )
 
-    st.title("📊 BTC Trend Following Bot - Dashboard")
+    st.title("📊 BTC Sniper Bot (Paper Trading) - Dashboard")
     st.markdown("---")
 
     # Auto-refresh cada 10 segundos
@@ -183,7 +183,7 @@ def run_dashboard():
         st.info("Sin trades registrados.")
 
     # ── Decisiones del Bot ─────────────────────────────────────
-    st.subheader("Últimas Señales (cada 15 min)")
+    st.subheader("Últimas Señales (Sniper Scoring)")
     decisions_df = load_decisions(20)
     if not decisions_df.empty:
         display_cols = []
