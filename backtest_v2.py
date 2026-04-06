@@ -1,10 +1,13 @@
 """
 backtest_v2.py - Backtesting mejorado de estrategias BTC/USDT
 
-Estrategias:
-1. Sniper v2 (mejorado) - Score>=5, cooldown 4h, requiere EMA cross + multi-TF
-2. Sniper v2 LONG only  - Igual pero solo compras
-3. Estrategia nueva      - Basada en investigación (Bollinger squeeze + momentum)
+Estrategias (8 variantes total):
+1. Sniper v2 (mejorado)         - Score>=5, cooldown 4h, requiere catalizador
+2. BB Squeeze + MACD Momentum   - Baja volatilidad → breakout con confirmación
+3. RSI Mean Reversion           - Comprar en sobreventa con tendencia alcista
+4. EMA Pullback Trend Rider     - Pullback a EMA21 en tendencia fuerte (patrón MT5)
+
+Cada una se prueba en LONG+SHORT y LONG only.
 
 Datos: BTC/USDT 15m desde 2022 hasta hoy
 Uso:   python3 backtest_v2.py
@@ -420,7 +423,7 @@ def run_bollinger_momentum(df_15m, long_only=False):
     ema50_1h = ind_1h["ema50"]
 
     last_trade_ts = None
-    cooldown_secs = 6 * 3600  # 6 horas entre trades
+    cooldown_secs = 3 * 3600  # 3 horas entre trades
     squeeze_lookback = 40     # Mirar squeeze en últimas 40 velas (10h)
 
     print(f"Ejecutando {name}...")
@@ -451,16 +454,23 @@ def run_bollinger_momentum(df_15m, long_only=False):
         price_breaks_upper = row["close"] > row["bb_upper"]
         price_breaks_lower = row["close"] < row["bb_lower"]
 
-        # 3. MACD confirma
-        macd_bullish = row["macd_hist"] > 0 and row.get("macd_cross_up", False)
-        macd_bearish = row["macd_hist"] < 0 and row.get("macd_cross_down", False)
-
-        # Alternativa: MACD histogram creciendo (no necesita cruce exacto)
-        if i > 1:
-            prev_hist = ind["macd_hist"].iloc[i-1]
-            if not pd.isna(prev_hist):
-                macd_bullish = macd_bullish or (row["macd_hist"] > 0 and row["macd_hist"] > prev_hist and row["macd_hist"] > prev_hist * 1.5)
-                macd_bearish = macd_bearish or (row["macd_hist"] < 0 and row["macd_hist"] < prev_hist and row["macd_hist"] < prev_hist * 1.5)
+        # 3. MACD confirma (relajado: histogram positivo/negativo + creciendo)
+        macd_bullish = False
+        macd_bearish = False
+        if row["macd_hist"] > 0:
+            if row.get("macd_cross_up", False):
+                macd_bullish = True
+            elif i > 1:
+                prev_hist = ind["macd_hist"].iloc[i-1]
+                if not pd.isna(prev_hist) and row["macd_hist"] > prev_hist:
+                    macd_bullish = True  # Histogram positivo y creciendo
+        if row["macd_hist"] < 0:
+            if row.get("macd_cross_down", False):
+                macd_bearish = True
+            elif i > 1:
+                prev_hist = ind["macd_hist"].iloc[i-1]
+                if not pd.isna(prev_hist) and row["macd_hist"] < prev_hist:
+                    macd_bearish = True  # Histogram negativo y cayendo
 
         # 4. Tendencia mayor (EMA 50 en 1h)
         try:
@@ -475,22 +485,217 @@ def run_bollinger_momentum(df_15m, long_only=False):
         # 6. RSI no extremo
         rsi_val = row["rsi"]
 
+        # Squeeze detectado = bandwidth en percentil bajo Y precio rompe banda
+        squeeze_long = bw_percentile < 0.35 and price_breaks_upper
+        squeeze_short = bw_percentile < 0.35 and price_breaks_lower
+        # También permitir breakout fuerte sin squeeze estricto
+        strong_breakout_long = price_breaks_upper and row["vol_ratio"] >= 2.0
+        strong_breakout_short = price_breaks_lower and row["vol_ratio"] >= 2.0
+
         # ── SEÑAL LONG ──
-        # Squeeze reciente + precio rompe arriba + MACD bullish + tendencia 1h up
-        if (bw_percentile < 0.30 or price_breaks_upper) and macd_bullish and trend_up and rsi_val < 70 and vol_ok:
+        if (squeeze_long or strong_breakout_long) and macd_bullish and trend_up and rsi_val < 75:
             if not engine.position:
-                sl_dist = row["atr"] * 1.0   # SL más ajustado
-                tp_dist = row["atr"] * 3.5   # TP mayor = ratio 1:3.5
+                sl_dist = row["atr"] * 1.2
+                tp_dist = row["atr"] * 3.0   # Ratio 1:2.5
                 engine.open_trade("LONG", row["close"], sl_dist, tp_dist, ts)
                 last_trade_ts = ts
 
         # ── SEÑAL SHORT ──
-        elif not long_only and (bw_percentile < 0.30 or price_breaks_lower) and macd_bearish and trend_up == False and rsi_val > 30 and vol_ok:
+        elif not long_only and (squeeze_short or strong_breakout_short) and macd_bearish and trend_up == False and rsi_val > 25:
             if not engine.position:
-                sl_dist = row["atr"] * 1.0
-                tp_dist = row["atr"] * 3.5
+                sl_dist = row["atr"] * 1.2
+                tp_dist = row["atr"] * 3.0
                 engine.open_trade("SHORT", row["close"], sl_dist, tp_dist, ts)
                 last_trade_ts = ts
+
+    return engine
+
+
+# ══════════════════════════════════════════════════════════════
+# ESTRATEGIA 3: RSI MEAN REVERSION + TENDENCIA
+# ══════════════════════════════════════════════════════════════
+# Lógica basada en estrategias probadas de crypto:
+# - Compra cuando RSI está en sobreventa (< 30) en tendencia alcista mayor
+# - Vende cuando RSI está en sobrecompra (> 70) en tendencia bajista mayor
+# - Usa EMA 50/200 para determinar la tendencia mayor
+# - Confirmación con volumen y MACD
+# - SL debajo del mínimo reciente, TP con ratio 1:2
+
+def run_rsi_mean_reversion(df_15m, long_only=False):
+    name = "RSI MeanRev" + (" LONG only" if long_only else "")
+    engine = BacktestEngine(name)
+
+    df_1h = df_15m.resample("1h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+    ind = compute_indicators(df_15m)
+    ind_1h = compute_indicators(df_1h)
+
+    ema50_1h = ind_1h["ema50"]
+    ema200_1h = ind_1h["ema200"]
+
+    last_trade_ts = None
+    cooldown_secs = 2 * 3600  # 2 horas
+
+    print(f"Ejecutando {name}...")
+
+    for i, (ts, row) in enumerate(ind.iterrows()):
+        if i < 200 or pd.isna(row["rsi"]) or pd.isna(row["atr"]) or row["atr"] == 0:
+            continue
+
+        engine.check_position(row, ts)
+
+        if last_trade_ts and (ts - last_trade_ts).total_seconds() < cooldown_secs:
+            continue
+
+        rsi_val = row["rsi"]
+
+        # Determinar tendencia mayor (1h: EMA50 vs EMA200)
+        try:
+            idx_1h = ema50_1h.index.asof(ts)
+            if idx_1h is pd.NaT:
+                continue
+            e50 = ema50_1h.get(idx_1h, None)
+            e200 = ema200_1h.get(idx_1h, None)
+            if e50 is None or e200 is None or pd.isna(e50) or pd.isna(e200):
+                continue
+            uptrend_major = e50 > e200
+        except Exception:
+            continue
+
+        # Mínimo/máximo recientes para SL dinámico
+        recent_low = ind["low"].iloc[max(0, i-10):i+1].min()
+        recent_high = ind["high"].iloc[max(0, i-10):i+1].max()
+
+        # ── SEÑAL LONG: RSI sobreventa en tendencia alcista ──
+        if rsi_val < 30 and uptrend_major:
+            # Confirmaciones adicionales
+            macd_turning = row["macd_hist"] > ind["macd_hist"].iloc[i-1] if i > 0 and not pd.isna(ind["macd_hist"].iloc[i-1]) else False
+            price_near_ema = row["close"] <= row["ema50"] * 1.02  # Precio cerca o debajo de EMA50
+
+            if macd_turning or price_near_ema:
+                if not engine.position:
+                    sl_dist = max(row["close"] - recent_low, row["atr"] * 0.8)
+                    tp_dist = sl_dist * 2.5  # Ratio 1:2.5
+                    engine.open_trade("LONG", row["close"], sl_dist, tp_dist, ts)
+                    last_trade_ts = ts
+
+        # ── SEÑAL SHORT: RSI sobrecompra en tendencia bajista ──
+        elif not long_only and rsi_val > 70 and not uptrend_major:
+            macd_turning = row["macd_hist"] < ind["macd_hist"].iloc[i-1] if i > 0 and not pd.isna(ind["macd_hist"].iloc[i-1]) else False
+            price_near_ema = row["close"] >= row["ema50"] * 0.98
+
+            if macd_turning or price_near_ema:
+                if not engine.position:
+                    sl_dist = max(recent_high - row["close"], row["atr"] * 0.8)
+                    tp_dist = sl_dist * 2.5
+                    engine.open_trade("SHORT", row["close"], sl_dist, tp_dist, ts)
+                    last_trade_ts = ts
+
+    return engine
+
+
+# ══════════════════════════════════════════════════════════════
+# ESTRATEGIA 4: EMA PULLBACK TREND RIDER (patrón MT5 EA)
+# ══════════════════════════════════════════════════════════════
+# Basada en los EAs más rentables de MetaTrader 5:
+# - Espera tendencia fuerte (ADX > 25, EMAs alineadas)
+# - Entra cuando el precio hace pullback a la EMA21
+# - Sale con trailing stop o TP fijo
+# - Muy selectivo: solo opera en tendencias claras
+# - Ratio R:R 1:2 con SL en EMA50
+
+def run_ema_pullback(df_15m, long_only=False):
+    name = "EMA Pullback" + (" LONG only" if long_only else "")
+    engine = BacktestEngine(name)
+
+    df_1h = df_15m.resample("1h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+    df_4h = df_15m.resample("4h").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+    ind = compute_indicators(df_15m)
+    ind_1h = compute_indicators(df_1h)
+    ind_4h = compute_indicators(df_4h)
+
+    adx_1h = ind_1h["adx"]
+    ema_above_1h = ind_1h["ema_above"].astype(float)
+    ema_above_4h = ind_4h["ema_above"].astype(float)
+
+    last_trade_ts = None
+    cooldown_secs = 3 * 3600  # 3 horas
+    was_away_from_ema = {}  # Track si precio se alejó de EMA21
+
+    print(f"Ejecutando {name}...")
+
+    for i, (ts, row) in enumerate(ind.iterrows()):
+        if i < 60 or pd.isna(row["adx"]) or pd.isna(row["atr"]) or row["atr"] == 0:
+            continue
+
+        engine.check_position(row, ts)
+
+        if last_trade_ts and (ts - last_trade_ts).total_seconds() < cooldown_secs:
+            continue
+
+        # ── CONDICIONES BASE ──
+        # ADX fuerte en 15m
+        if row["adx"] < 25:
+            was_away_from_ema["long"] = False
+            was_away_from_ema["short"] = False
+            continue
+
+        # EMAs alineadas en 15m
+        ema_ribbon_bull = row["ema9"] > row["ema21"] > row["ema50"]
+        ema_ribbon_bear = row["ema9"] < row["ema21"] < row["ema50"]
+
+        # Confirmar tendencia en timeframes superiores
+        try:
+            idx_1h = ema_above_1h.index.asof(ts)
+            idx_4h = ema_above_4h.index.asof(ts)
+            tf_bull = False
+            tf_bear = False
+            if idx_1h is not pd.NaT and idx_4h is not pd.NaT:
+                a1h = adx_1h.get(idx_1h, 0)
+                bull_1h = ema_above_1h.get(idx_1h, 0) > 0.5
+                bull_4h = ema_above_4h.get(idx_4h, 0) > 0.5
+                if a1h > 20:
+                    tf_bull = bull_1h and bull_4h
+                    tf_bear = not bull_1h and not bull_4h
+        except Exception:
+            continue
+
+        # Detectar pullback: precio tocó o cruzó EMA21 desde arriba/abajo
+        price = row["close"]
+        ema21 = row["ema21"]
+        ema50 = row["ema50"]
+        touch_margin = row["atr"] * 0.3  # Margen de "toque"
+
+        # Track si el precio se alejó de EMA21 (necesario para pullback)
+        if ema_ribbon_bull and price > ema21 + row["atr"] * 0.5:
+            was_away_from_ema["long"] = True
+        if ema_ribbon_bear and price < ema21 - row["atr"] * 0.5:
+            was_away_from_ema["short"] = True
+
+        pullback_long = (abs(price - ema21) < touch_margin) and was_away_from_ema.get("long", False)
+        pullback_short = (abs(price - ema21) < touch_margin) and was_away_from_ema.get("short", False)
+
+        # RSI no extremo
+        rsi_val = row["rsi"]
+
+        # ── SEÑAL LONG ──
+        if ema_ribbon_bull and tf_bull and pullback_long and 35 < rsi_val < 65:
+            if not engine.position:
+                sl_dist = abs(price - ema50) + row["atr"] * 0.3  # SL debajo de EMA50
+                sl_dist = max(sl_dist, row["atr"] * 1.0)  # Mínimo 1x ATR
+                tp_dist = sl_dist * 2.0  # Ratio 1:2
+                engine.open_trade("LONG", price, sl_dist, tp_dist, ts)
+                last_trade_ts = ts
+                was_away_from_ema["long"] = False
+
+        # ── SEÑAL SHORT ──
+        elif not long_only and ema_ribbon_bear and tf_bear and pullback_short and 35 < rsi_val < 65:
+            if not engine.position:
+                sl_dist = abs(ema50 - price) + row["atr"] * 0.3
+                sl_dist = max(sl_dist, row["atr"] * 1.0)
+                tp_dist = sl_dist * 2.0
+                engine.open_trade("SHORT", price, sl_dist, tp_dist, ts)
+                last_trade_ts = ts
+                was_away_from_ema["short"] = False
 
     return engine
 
@@ -541,16 +746,29 @@ def print_report(results):
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("  BACKTEST v2 — ESTRATEGIAS MEJORADAS")
+    print("  BACKTEST v2 — 8 ESTRATEGIAS (4 tipos × L+S / LONG only)")
     print("=" * 70)
 
     df_15m = fetch_all_candles("15m")
 
-    # 4 estrategias
-    s1 = run_sniper_v2(df_15m, long_only=False)
-    s2 = run_sniper_v2(df_15m, long_only=True)
-    s3 = run_bollinger_momentum(df_15m, long_only=False)
-    s4 = run_bollinger_momentum(df_15m, long_only=True)
+    # 8 estrategias: 4 tipos × 2 modos
+    strategies = []
 
-    results = [s1.results(), s2.results(), s3.results(), s4.results()]
+    print("\n── Estrategia 1: Sniper v2 ──")
+    strategies.append(run_sniper_v2(df_15m, long_only=False))
+    strategies.append(run_sniper_v2(df_15m, long_only=True))
+
+    print("\n── Estrategia 2: BB Squeeze + MACD ──")
+    strategies.append(run_bollinger_momentum(df_15m, long_only=False))
+    strategies.append(run_bollinger_momentum(df_15m, long_only=True))
+
+    print("\n── Estrategia 3: RSI Mean Reversion ──")
+    strategies.append(run_rsi_mean_reversion(df_15m, long_only=False))
+    strategies.append(run_rsi_mean_reversion(df_15m, long_only=True))
+
+    print("\n── Estrategia 4: EMA Pullback Trend Rider ──")
+    strategies.append(run_ema_pullback(df_15m, long_only=False))
+    strategies.append(run_ema_pullback(df_15m, long_only=True))
+
+    results = [s.results() for s in strategies]
     print_report(results)
