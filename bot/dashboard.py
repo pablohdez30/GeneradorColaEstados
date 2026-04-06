@@ -122,7 +122,7 @@ def run_dashboard():
         layout="wide",
     )
 
-    st.title("📊 BTC Sniper Bot (Paper Trading) - Dashboard")
+    st.title("📊 BTC EMA Pullback Trend Rider (Paper Trading) - Dashboard")
     st.markdown("---")
 
     # Auto-refresh cada 10 segundos
