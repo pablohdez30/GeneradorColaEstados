@@ -43,18 +43,16 @@ def main():
 
     print(f"""
     ╔══════════════════════════════════════════════════════════════╗
-    ║       BTC/USDT PAPER TRADING BOT (Sniper Logic)            ║
+    ║     BTC/USDT PAPER TRADING BOT (EMA Pullback Trend Rider)  ║
     ╠══════════════════════════════════════════════════════════════╣
     ║  Par:          {SYMBOL} Perpetual                          ║
-    ║  Mercado:      FUTUROS x{LEVERAGE}                                  ║
-    ║  Timeframes:   15m, 1h, 4h (multi-timeframe)               ║
+    ║  Timeframes:   15m + 1h + 4h (multi-timeframe)             ║
     ║  Modo:         PAPER TRADING (simulacion)                   ║
     ║  Balance:      {INITIAL_BALANCE:,.2f} USDT (ficticio)                ║
     ╠══════════════════════════════════════════════════════════════╣
-    ║  Estrategia:   Sniper Scoring (7 condiciones, min 4/7)     ║
-    ║  Operaciones:  LONG + SHORT (paper)                        ║
-    ║  Cooldown:     15 min entre trades                          ║
-    ║  Análisis:     Cada 5 minutos                               ║
+    ║  Estrategia:   EMA Pullback (backtest: +20.8%, DD 32.6%)  ║
+    ║  Entrada:      Pullback a EMA21 en tendencia fuerte        ║
+    ║  Filtros:      ADX>25, Ribbon EMA, Multi-TF, RSI 35-65    ║
     ║  Stops:        ATR-based (SL=1.5x, TP=3x, ratio 1:2)      ║
     ║  Dashboard:    streamlit run bot/dashboard.py               ║
     ╚══════════════════════════════════════════════════════════════╝
