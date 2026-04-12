@@ -1,0 +1,60 @@
+BOT DE DETECCION DE OPORTUNIDADES EN ACCIONES
+================================================
+
+OBJETIVO: Escanear +1,500 acciones cada dia y detectar las que tienen mayor probabilidad de subir en semanas/meses. Envia alertas por Telegram.
+
+COMO FUNCIONA:
+1. Cada noche despues del cierre escanea S&P 500 + NASDAQ 100 + Russell 1000
+2. Filtra: solo empresas con Market Cap > $1B, volumen alto, precio > $5
+3. Puntua cada accion de 0 a 100
+4. Envia alerta con las Top 10-20
+
+SISTEMA DE PUNTUACION (0-100):
+
+Tecnico (50 puntos):
+- Tendencia alcista (EMA 50 > EMA 200) = 10 pts
+- Pullback saludable a media movil = 10 pts
+- RSI en zona optima (40-60) = 5 pts
+- MACD cruzando al alza = 5 pts
+- Volumen creciente = 10 pts
+- Rompiendo resistencias = 10 pts
+
+Fundamental (30 puntos):
+- Ingresos creciendo > 10% anual = 10 pts
+- Beneficio por accion mejorando = 10 pts
+- Deuda controlada = 5 pts
+- Margen neto > 10% = 5 pts
+
+Momentum (20 puntos):
+- Supera al S&P 500 en 1-3 meses = 10 pts
+- Earnings proximos positivos = 5 pts
+- Sector recibiendo capital = 5 pts
+
+EJEMPLO DE ALERTA:
+
+  NVDA - Nvidia (87/100)
+  Tecnico: Golden Cross, pullback a EMA50, volumen +40%
+  Fundamental: Revenue +95% YoY, margen 55%
+  Catalizador: Earnings en 2 semanas
+  Entrada: $850-$870 | SL: $800 (-6%) | TP: $1,050 (+20%)
+
+  LLY - Eli Lilly (82/100)
+  Tecnico: Rotura de resistencia $780, RSI 55
+  Fundamental: Revenue +35% YoY
+  Catalizador: Resultados FDA pendientes
+  Entrada: $780-$800 | SL: $740 (-6%) | TP: $920 (+16%)
+
+GESTION DE RIESGO:
+- Riesgo por operacion: 1-2% del capital
+- Maximo 5-10 posiciones abiertas
+- Maximo 2 acciones del mismo sector
+- Stop Loss obligatorio (-5% a -8%)
+- El bot NO ejecuta ordenes, solo avisa. Tu decides.
+
+TECNOLOGIA: Python, Yahoo Finance, Alpaca API, Telegram
+
+FASES:
+1. Scanner tecnico basico (1-2 semanas)
+2. Anadir fundamentales (1 semana)
+3. Backtesting historico (1-2 semanas)
+4. Mejoras continuas (ML, noticias, sentimiento)
